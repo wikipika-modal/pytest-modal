@@ -40,7 +40,13 @@ class Worker:
             self.ids = [line for line in ids.read().split("\n") if line]
         self.out = os.fdopen(_stdout, "w")
         self.mark = time.monotonic()
-        self.emit("hello", sysplatform=sys.platform, version_info=tuple(sys.version_info), executable=sys.executable)
+        self.emit(
+            "hello",
+            sysplatform=sys.platform,
+            version_info=tuple(sys.version_info),
+            executable=sys.executable,
+            pytest=pytest.__version__,
+        )
 
     def emit(self, kind, **data):
         self.out.write(MARK + json.dumps({"kind": kind, **data}, default=repr) + "\n")

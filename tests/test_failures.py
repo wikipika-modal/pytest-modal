@@ -4,6 +4,8 @@ import subprocess
 import sys
 import time
 
+import pytest
+
 COUNT_STARTS = """
 import os
 WORKER = "PYTEST_MODAL_SHARD" in os.environ
@@ -71,6 +73,15 @@ def test_a_file_only_the_shard_cannot_import_fails_alone(pytester, sharded):
     result = sharded("--modal-shards=1")
     result.assert_outcomes(passed=1, errors=2)
     result.stdout.fnmatch_lines(["*No module named 'nothing_by_this_name'*", "*did not collect this test*"])
+
+
+@pytest.mark.parametrize("collect", ["local", "remote"])
+def test_shards_on_another_pytest_version_are_a_usage_error(pytester, sharded, collect):
+    pytester.makeconftest("import os, pytest\nif 'PYTEST_MODAL_SHARD' in os.environ: pytest.__version__ = '1.2.3'")
+    pytester.makepyfile("def test_one(): pass")
+    result = sharded(f"--modal-collect={collect}")
+    result.stderr.fnmatch_lines(["*the shards run pytest 1.2.3 (*) and this process runs pytest *"])
+    assert result.ret == pytest.ExitCode.USAGE_ERROR
 
 
 def test_a_shard_that_hangs_on_start_is_replaced(pytester, sharded):

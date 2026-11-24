@@ -267,6 +267,13 @@ class Controller:
         hook = self.config.hook
         if kind == "hello":
             lane.greeted = True
+            theirs = event.pop("pytest")
+            if theirs != pytest.__version__:
+                # Reports cross between the two as pytest's own serialised form, which is tied to its version.
+                raise pytest.UsageError(
+                    f"the shards run pytest {theirs} ({event['executable']}) and this process runs pytest "
+                    f"{pytest.__version__}: install the same version in both"
+                )
             lane.workerinfo.update(event)
         elif kind == "items":
             for nodeid, location, group in event["items"]:
