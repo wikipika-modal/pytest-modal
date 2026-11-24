@@ -27,6 +27,8 @@ def pytest_addhooks(pluginmanager):
 def pytest_configure(config):
     mode = config.getoption("modal_worker")
     if mode:
+        # The controller listed the tests; a file this shard cannot import must not stop the shard's others.
+        config.option.continue_on_collection_errors = mode == "run" or config.option.continue_on_collection_errors
         config.pluginmanager.register(Worker(config, mode == "collect"), "modal-worker")
 
 

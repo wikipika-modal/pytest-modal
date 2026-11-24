@@ -63,6 +63,16 @@ def test_a_test_the_shard_does_not_collect_is_an_error_and_not_retried(pytester,
     assert starts(pytester) == 1
 
 
+def test_a_file_only_the_shard_cannot_import_fails_alone(pytester, sharded):
+    pytester.makepyfile(
+        test_a="import os\nif 'PYTEST_MODAL_SHARD' in os.environ:\n    import nothing_by_this_name\ndef test_a(): pass",
+        test_b="def test_b(): pass",
+    )
+    result = sharded("--modal-shards=1")
+    result.assert_outcomes(passed=1, errors=2)
+    result.stdout.fnmatch_lines(["*No module named 'nothing_by_this_name'*", "*did not collect this test*"])
+
+
 def test_a_shard_that_hangs_on_start_is_replaced(pytester, sharded):
     pytester.makeconftest(COUNT_STARTS + "import time\nif WORKER and len(open('starts').read()) == 1: time.sleep(600)")
     pytester.makeini("[pytest]\nmodal_start_timeout = 2")
