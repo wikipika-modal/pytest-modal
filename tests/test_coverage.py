@@ -1,3 +1,5 @@
+import sys
+
 import pytest
 
 
@@ -19,6 +21,15 @@ def package(pytester):
 def test_coverage_matches_a_plain_run(package, sharded, collect):
     plain = totals(package.runpytest_subprocess("--cov=pkg", "--cov-report=term"))
     result = sharded("--cov=pkg", "--cov-report=term", "--modal-shards=2", f"--modal-collect={collect}")
+    assert plain and totals(result) == plain
+
+
+def test_a_shard_that_starts_late_leaves_the_coverage_of_the_others(package, sharded):
+    slow = package.path / "slow-python"
+    slow.write_text(f'#!/bin/sh\n[ "$PYTEST_MODAL_SHARD" = 1 ] && sleep 2\nexec {sys.executable} "$@"\n')
+    slow.chmod(0o755)
+    plain = totals(package.runpytest_subprocess("--cov=pkg", "--cov-report=term"))
+    result = sharded("--cov=pkg", "--cov-report=term", "--modal-shards=2", "-o", f"modal_python={slow}")
     assert plain and totals(result) == plain
 
 

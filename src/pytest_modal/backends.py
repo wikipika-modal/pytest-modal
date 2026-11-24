@@ -89,10 +89,13 @@ class Local:
         self.processes = []
 
     def run(self, lane, args, emit) -> int:
+        # Shards share this directory, where pytest-cov erases and combines every .coverage.* it finds: each
+        # keeps its data elsewhere, and only the controller writes here.
+        private = {"COVERAGE_FILE": os.path.join(self.library, f"coverage-{id(lane)}")}
         process = subprocess.Popen(
             [*self.command, *args],
             cwd=self.cwd,
-            env={**self.env, **lane.env},
+            env={**self.env, **lane.env, **private},
             text=True,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
