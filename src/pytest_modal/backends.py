@@ -207,13 +207,12 @@ class Modal:
             *args,
             workdir=self.cwd,
             env={**self.env, **lane.env},
-            bufsize=1,
         )
         process.stdin.write("\n".join(lane.shard.ids))
         process.stdin.write_eof()
         process.stdin.drain()
         code = None
-        for line in process.stdout:
+        for line in lines(process.stdout):
             emit(line)
             # After its goodbye a shard only has an interpreter to shut down, which nothing waits for.
             if BYE in line:
@@ -225,6 +224,17 @@ class Modal:
 
     def close(self):
         self.stack.close()
+
+
+def lines(pieces):
+    """The lines of text that arrives in pieces. Asked for a line at a time, the Modal client makes a trip to
+    its event loop for every line, which at a thousand shards is most of what the controller does."""
+    rest = ""
+    for piece in pieces:
+        *whole, rest = (rest + piece).split("\n")
+        yield from whole
+    if rest:
+        yield rest
 
 
 def environment(folders=None):
