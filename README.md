@@ -63,11 +63,12 @@ not kept from it by this: for code you do not trust, use `--modal-from=<sandbox 
 ### How many sandboxes
 
 No number of sandboxes finishes before the heaviest group (a file, by default) does. `--modal-shards=auto`
-fills shards to half that group's weight, up to `--modal-max-shards`; a number given to `--modal-shards` is
-used as given, however large. Weights are the wall time each test
-cost its shard in earlier runs; a test never seen weighs the median. They are kept in `.pytest_cache` and,
-for machines that keep no cache between runs, in a Modal Dict named `pytest-modal` in the environment the
-run uses, under the name of the project's root directory.
+fills shards to half that group's weight, and to no less than a shard was measured to cost besides its
+tests (a sandbox and an interpreter to start, files to collect), up to `--modal-max-shards`. A number given
+to `--modal-shards` is used as given, however large. Weights are the wall time each test cost its shard in
+earlier runs; a test never seen weighs the median. They are kept in `.pytest_cache` and, for machines that
+keep no cache between runs, in a Modal Dict named `pytest-modal` in the environment the run uses, under the
+name of the project's root directory.
 
 ### What a run leaves on Modal
 
@@ -198,8 +199,8 @@ counts as a plain run. With a warm build the six rows finish in 15 to 21 s; a ro
 - With `-s`, what a test wrote is shown when that test finishes, not while it runs. `--pdb` and `--trace`
   are refused: there is no terminal where the test runs.
 - One thread per shard in the controller.
-- The auto shard count ignores what a sandbox costs to start, and on a first run, with no weights, it
-  counts tests: a file holding half the tests gets half the weight whatever it costs.
+- On a first run, with no weights, the auto shard count counts tests: a file holding half the tests gets
+  half the weight whatever it costs.
 - A shard collects the whole of each file it has a test from.
 - With `--modal-from=ID` the controller has none of the project, so `--cov` reports need the sources at the
   same paths where it runs, and options a plugin of the project defines go through `--modal-args`.

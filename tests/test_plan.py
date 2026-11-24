@@ -60,3 +60,17 @@ def test_the_limit_bounds_auto_and_not_a_count_that_is_given():
     apart = frozenset({"0.py", "1.py"})
     assert len(plan(tests, None, {}, 64, apart)) == 64
     assert len(plan(tests, 128, {}, 64, apart)) == 128
+
+
+def test_auto_fills_a_shard_to_no_less_than_it_costs_to_start():
+    tests = [(f"t.py::test_{n}", f"t.py::test_{n}") for n in range(1000)]
+    quick = {nodeid: 0.5 for nodeid, _ in tests}
+    assert len(plan(tests, None, quick, 4096)) == 1000
+    assert len(plan(tests, None, quick, 4096, start=5.0)) == 100
+    assert len(plan(tests, 400, quick, 4096, start=5.0)) == 400
+
+
+def test_a_heavy_group_still_sets_the_fill_when_it_exceeds_the_start_cost():
+    tests = [(f"t.py::test_{n}", f"t.py::test_{n}") for n in range(100)]
+    durations = {nodeid: 1.0 for nodeid, _ in tests} | {"t.py::test_0": 40.0}
+    assert len(plan(tests, None, durations, 4096, start=5.0)) == len(plan(tests, None, durations, 4096)) == 7

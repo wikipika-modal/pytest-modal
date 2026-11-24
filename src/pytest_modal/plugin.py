@@ -23,6 +23,8 @@ from .backends import BACKENDS, Local, origin, sign_in, without_modal
 from .plan import Shard, plan
 
 DURATIONS = "modal/durations"
+# Kept with the weights, under a name no test has: the seconds a shard costs besides its tests.
+START = "shard start"
 ISOLATED = "isolate:"
 OUTPUT = ("Captured stdout", "Captured stderr")
 CONTROLLER_ONLY = ("--junitxml", "--junit-xml", "--basetemp", "--cov-report", "--cov-fail-under")
@@ -87,7 +89,7 @@ class Lane:
         self.greeted = self.bye = False
         self.tail = deque(maxlen=15)
         self.launched = time.monotonic()
-        self.queued = self.created = self.up = self.seconds = 0.0
+        self.queued = self.created = self.up = self.seconds = self.spent = 0.0
         self.stop = None
         self.outcome = None
 
@@ -181,7 +183,8 @@ class Controller:
         project = (self.root or config.rootpath).name
         known = {**self.ready().weights(project), **(cache.get(DURATIONS, {}) if cache else {})}
         count = None if config.getoption("modal_shards") == "auto" else int(config.getoption("modal_shards"))
-        shards = plan(tests, count, known, config.getoption("modal_max_shards"), alone)
+        start = known.pop(START, 0.0)
+        shards = plan(tests, count, known, config.getoption("modal_max_shards"), alone, start)
         self.shards = len(shards)
         terminal = config.pluginmanager.get_plugin("terminalreporter")
         if terminal:
@@ -200,9 +203,11 @@ class Controller:
             if main:
                 signal.signal(signal.SIGTERM, previous)
             self.wall = time.monotonic() - started
+            costs = sorted(lane.seconds - lane.spent for lane in self.lanes if lane.mode == "run" and lane.bye)
+            kept = {**known, **self.spent, START: costs[len(costs) // 2] if costs else start}
             if cache:
-                cache.set(DURATIONS, {**known, **self.spent})
-            self.backend.keep(project, {**known, **self.spent})
+                cache.set(DURATIONS, kept)
+            self.backend.keep(project, kept)
         return True
 
     def group(self, nodeid, marked):
@@ -358,6 +363,7 @@ class Controller:
         elif kind == "logfinish":
             lane.current = None
             self.spent[event["nodeid"]] = event["took"]
+            lane.spent += event["took"]
             hook.pytest_runtest_logfinish(nodeid=event["nodeid"], location=tuple(event["location"]))
         else:
             report = hook.pytest_report_from_serializable(config=self.config, data=event["report"])

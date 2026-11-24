@@ -140,6 +140,18 @@ def test_durations_are_kept_for_the_next_plan(pytester, sharded):
     result.stdout.fnmatch_lines(["*modal/durations*", "*test_one*"])
 
 
+def test_what_a_shard_costs_to_start_is_kept_and_bounds_the_next_auto_count(pytester, sharded):
+    pytester.makepyfile(**{f"test_{n}": "def test_one(): pass" for n in range(8)})
+    sharded().stdout.fnmatch_lines(["modal: 8 shards*"])
+    kept = pytester.path / ".pytest_cache/v/modal/durations"
+    weights = json.loads(kept.read_text())
+    # A shard's whole time less its tests': an interpreter and pytest to start, a file to collect.
+    assert 0.05 < weights["shard start"] < 30
+    assert sum(seconds for nodeid, seconds in weights.items() if "::" in nodeid) < weights["shard start"]
+    sharded().stdout.fnmatch_lines(["modal: 1 shards*"])
+    sharded("--modal-shards=8").stdout.fnmatch_lines(["modal: 8 shards*"])
+
+
 def test_a_kept_duration_counts_time_spent_around_the_test(pytester, sharded):
     pytester.makeconftest(
         """
