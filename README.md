@@ -3,6 +3,41 @@
 Run a pytest session's tests across [Modal](https://modal.com) sandboxes by adding `--modal` to the
 command you already run. A prototype.
 
+## Quickstart
+
+You need Python 3.10 or later, a project whose tests run with `pytest`, and a
+[Modal account](https://modal.com/signup).
+
+```
+pip install pytest-modal    # into the environment you run pytest from
+modal setup                 # once: opens a browser and stores a token on this machine
+pytest --modal
+```
+
+The first run builds an image holding the packages of that environment, then starts the sandboxes and
+reports each test as it finishes. For a project of 20 one-second tests in four files:
+
+```
+$ pytest --modal
+============================= test session starts ==============================
+platform linux -- Python 3.12.16, pytest-9.2.0, pluggy-1.7.0
+modal: modal backend
+rootdir: /home/you/project
+plugins: modal-0.0.1, anyio-4.16.0
+collected 20 items
+modal: preparing the image the shards start from
+....................                                                     [100%]
+modal: 4 shards, 6.9s wall, 20.0s of tests, start 20.8s, shards up in 1.6s (slowest 1.8s), app ap-...
+============================= 20 passed in 27.97s ==============================
+```
+
+The last `modal:` line is the run in brief: four sandboxes ran 20.0 s of tests in 6.9 s, after 20.8 s spent
+on the image. The image is kept, so the next run of the same project ends with `20 passed in 8.31s`, where
+plain `pytest` takes 20.03 s. Sandboxes are billed as any other use of Modal is.
+
+To try it without an account, `pytest --modal --modal-backend=local` shards over local subprocesses
+instead. The same command takes these options, which the sections below explain:
+
 ```
 pytest --modal                         # as many sandboxes as shorten the run
 pytest --modal --modal-shards=8

@@ -1431,10 +1431,13 @@ dev = [
     { name = "pytest-cov" },
     { name = "ruff" },
 ]
+test = [
+    { name = "pytest-cov" },
+]
 
 [package.metadata]
 requires-dist = [
-    { name = "modal", specifier = ">=1.6" },
+    { name = "modal", specifier = ">=1.6.2" },
     { name = "pytest", specifier = ">=8" },
 ]
 
@@ -1443,6 +1446,7 @@ dev = [
     { name = "pytest-cov", specifier = ">=7.1.0" },
     { name = "ruff" },
 ]
+test = [{ name = "pytest-cov", specifier = ">=7.1.0" }]
 
 [[package]]
 name = "rich"
