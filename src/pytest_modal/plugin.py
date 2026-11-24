@@ -24,6 +24,7 @@ from .plan import Shard, plan
 
 DURATIONS = "modal/durations"
 ISOLATED = "isolate:"
+OUTPUT = ("Captured stdout", "Captured stderr")
 CONTROLLER_ONLY = ("--junitxml", "--junit-xml", "--basetemp", "--cov-report", "--cov-fail-under")
 
 
@@ -51,6 +52,8 @@ def pytest_load_initial_conftests(early_config):
 def pytest_configure(config):
     if not config.getoption("modal") or config.getoption("modal_worker"):
         return
+    if config.option.usepdb or config.option.trace:
+        raise pytest.UsageError("--pdb and --trace need a terminal where the test runs; run that test without --modal")
     conf = config.rootpath / config.getini("modal_conf")
     if conf.is_file():
         spec = importlib.util.spec_from_file_location("modal_conf", conf)
@@ -104,6 +107,10 @@ class Controller:
         self.given = for_shards(options) + shlex.split(config.getoption("modal_args"))
         if config.pluginmanager.hasplugin("_cov"):
             self.given.append("--cov-report=")
+        # With -s a shard still captures, and what each test wrote is shown here when the test finishes.
+        self.loud = config.option.capture == "no"
+        if self.loud:
+            self.given.append("--capture=fd")
         self.retries = config.getoption("modal_retries")
         self.patience = float(config.getini("modal_start_timeout"))
         self.backend = self.collector = self.starting = self.broken = None
@@ -338,6 +345,11 @@ class Controller:
             if report.when == "teardown" and report.nodeid in lane.pending:
                 del lane.pending[report.nodeid]
                 lane.finished += 1
+            if self.loud:
+                written = [section for section in report.sections if section[0].startswith(OUTPUT)]
+                if written and report.when == "teardown":
+                    self.say("".join(text for _, text in written).rstrip("\n"))
+                report.sections = [section for section in report.sections if section not in written]
             hook.pytest_runtest_logreport(report=report)
 
     def finish(self, lane):

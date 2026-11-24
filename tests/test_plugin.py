@@ -41,6 +41,29 @@ def test_failure_text_and_captured_output_come_back(suite, sharded):
     output.fnmatch_lines(["*hello from the shard*"])
 
 
+def test_s_shows_what_each_test_wrote_when_it_finishes(pytester, sharded):
+    pytester.makepyfile(
+        """
+        import sys
+        def test_quiet(): print("printed by a passing test")
+        def test_loud():
+            print("printed by a", "failing test", file=sys.stderr)
+            assert False
+        """
+    )
+    assert "printed by a passing test" not in sharded().stdout.str()
+    output = sharded("-s").stdout.str()
+    # Once each: a failure's report does not repeat what was already shown.
+    assert output.count("printed by a passing test") == output.count("printed by a failing test") == 1
+
+
+@pytest.mark.parametrize("option", ["--pdb", "--trace"])
+def test_a_debugger_is_refused(suite, sharded, option):
+    result = sharded(option)
+    result.stderr.fnmatch_lines(["*need a terminal where the test runs*"])
+    assert result.ret == pytest.ExitCode.USAGE_ERROR
+
+
 def test_verbose_output_names_the_shard(suite, sharded):
     sharded("-v", "--modal-shards=3").stdout.re_match_lines([r"\[modal\d\].*PASSED.*test_c\.py::test_only"])
 

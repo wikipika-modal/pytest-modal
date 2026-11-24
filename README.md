@@ -159,6 +159,7 @@ counts as a plain run. With a warm build the six rows finish in 15 to 21 s; a ro
 
 ## Not done
 
-- Output a test prints is shown when the test fails, not live; `-s` and `--pdb` do not work.
+- With `-s`, what a test wrote is shown when that test finishes, not while it runs. `--pdb` and `--trace`
+  are refused: there is no terminal where the test runs.
 - One thread per shard in the controller.
 - The auto shard count ignores what a sandbox costs to start.
