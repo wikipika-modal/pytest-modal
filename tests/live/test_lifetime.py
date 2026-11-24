@@ -40,8 +40,10 @@ def run(pytester):
 
 def test_a_lost_sandbox_fails_its_test_and_the_rest_run_elsewhere(run):
     controller, tag, seen = run
-    for sandbox in modal.Sandbox.list(tags=tag):
-        sandbox.terminate()
+    # Found by the tags every shard carries, next to the one this project's hook adds.
+    lost = list(modal.Sandbox.list(tags={**tag, "pytest-modal": "pytest-modal", "pytest-modal-shard": "modal0"}))
+    assert len(lost) == 1
+    lost[0].terminate()
     output = seen + controller.stdout.read().decode()
     assert controller.wait(300) == 1, output
     assert "while running this test" in output and "1 failed, 1 passed" in output and "1 restarts" in output, output

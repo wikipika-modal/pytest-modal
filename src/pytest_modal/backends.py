@@ -10,6 +10,7 @@ import subprocess
 import sys
 import sysconfig
 import tempfile
+import time
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -22,7 +23,7 @@ REMOTE_LIB = "/opt/pytest-modal"
 IGNORE = [".git", ".venv", "**/__pycache__", "**/*.pyc", "**/node_modules"]
 SITE = "/usr/local/lib/python{}/site-packages"
 NOT_MIRRORED = {"pytest-modal", "pip"}
-SNAPSHOT = {"timeout": 300, "ttl": 3600}
+STORE = "pytest-modal"
 CREDENTIALS = (
     "MODAL_TOKEN_ID",
     "MODAL_TOKEN_SECRET",
@@ -78,8 +79,11 @@ def without_modal(env) -> dict[str, str]:
 
 
 class Local:
+    name = ""
+
     def __init__(self, config, env=None):
-        self.command = [config.getini("modal_python") or sys.executable, "-c", BOOT, library()]
+        self.library = library()
+        self.command = [config.getini("modal_python") or sys.executable, "-c", BOOT, self.library]
         self.cwd = str(config.invocation_params.dir)
         self.env = dict(os.environ) if env is None else env
         self.processes = []
@@ -103,10 +107,17 @@ class Local:
             emit(line)
         return process.wait()
 
+    def weights(self, project) -> dict:
+        return {}
+
+    def keep(self, project, weights) -> None:
+        pass
+
     def close(self):
         for process in self.processes:
             if process.poll() is None:
                 process.kill()
+        shutil.rmtree(self.library, ignore_errors=True)
 
 
 class Modal:
@@ -120,20 +131,48 @@ class Modal:
             "timeout": int(config.getini("modal_timeout")),
             **(config.hook.pytest_modal_sandbox(config=config) or {}),
         }
-        # The app stops with this block if anything in it fails.
+        self.tags = {"pytest-modal": self.app.name, **self.options.pop("tags", {})}
+        self.snapshots = []
+        # The app stops with this block if anything in it fails, and the snapshots go once it has.
         with contextlib.ExitStack() as stack:
+            stack.callback(self.forget)
             stack.enter_context(self.app.run())
+            self.name = f"app {self.app.app_id}"
             self.prepare(config, origin(config.getoption("modal_from")), stack)
             self.stack = stack.pop_all()
+
+    def snapshot(self, sandbox):
+        """The disk of a sandbox as an image. It is deleted when the run ends, or by Modal once no sandbox of
+        the run can still be alive, should this process not live to do it."""
+        image = self.modal.Sandbox.from_id(sandbox).snapshot_filesystem(timeout=300, ttl=self.options["timeout"])
+        self.snapshots.append(image.object_id)
+        return image
+
+    def forget(self):
+        for image in self.snapshots:
+            with contextlib.suppress(self.modal.exception.Error):
+                self.modal.experimental.image_delete(image)
+
+    def weights(self, project) -> dict:
+        try:
+            return self.modal.Dict.from_name(STORE, create_if_missing=True).get(project, {})
+        except self.modal.exception.Error:
+            return {}
+
+    def keep(self, project, weights) -> None:
+        with contextlib.suppress(self.modal.exception.Error):
+            self.modal.Dict.from_name(STORE, create_if_missing=True).put(project, weights)
 
     def prepare(self, config, source, stack):
         modal = self.modal
         root, here = config.rootpath, config.invocation_params.dir
         if source == "disk":
-            self.command = [config.getini("modal_python") or sys.executable, "-c", BOOT, library()]
+            folder = library()
+            stack.callback(shutil.rmtree, folder, ignore_errors=True)
+            self.command = [config.getini("modal_python") or sys.executable, "-c", BOOT, folder]
             self.env = without_modal(os.environ)
             self.cwd = str(here)
-            self.image = modal.Sandbox.from_id(os.environ["MODAL_SANDBOX_ID"]).snapshot_filesystem(**SNAPSHOT)
+            self.image = self.snapshot(os.environ["MODAL_SANDBOX_ID"])
             return
         self.command = [config.getini("modal_python") or "python", "-c", BOOT, REMOTE_LIB]
         self.env = {}
@@ -143,7 +182,7 @@ class Modal:
             self.cwd = str(here if here.is_relative_to(root) else root)
         else:
             if source.startswith("sb-"):
-                source = modal.Sandbox.from_id(source).snapshot_filesystem(**SNAPSHOT).object_id
+                source = self.snapshot(source).object_id
             # Looked up by id: the image object a snapshot returns takes no files on top.
             image = modal.Image.from_id(source)
             self.cwd = config.getoption("modal_workdir")
@@ -151,9 +190,11 @@ class Modal:
         self.image = image.add_local_dir(PACKAGE, f"{REMOTE_LIB}/pytest_modal", ignore=["__pycache__"]).build(self.app)
 
     def run(self, lane, args, emit) -> int:
-        box = self.modal.Sandbox.create("sleep", "infinity", app=self.app, image=self.image, **self.options)
+        tags = {**self.tags, "pytest-modal-shard": lane.gateway.id if lane.mode == "run" else lane.mode}
+        box = self.modal.Sandbox.create("sleep", "infinity", app=self.app, image=self.image, tags=tags, **self.options)
         lane.stop = box.terminate
         lane.shard.where = box.object_id
+        lane.created = time.monotonic() - lane.launched
         process = box.exec(
             "sh",
             "-c",

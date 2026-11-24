@@ -64,7 +64,21 @@ not kept from it by this: for code you do not trust, use `--modal-from=<sandbox 
 
 No number of sandboxes finishes before the heaviest group (a file, by default) does. `--modal-shards=auto`
 fills shards to half that group's weight, up to `--modal-max-shards`. Weights are the wall time each test
-cost its shard in earlier runs, kept in `.pytest_cache`; a test never seen weighs the median.
+cost its shard in earlier runs; a test never seen weighs the median. They are kept in `.pytest_cache` and,
+for machines that keep no cache between runs, in a Modal Dict named `pytest-modal` in the environment the
+run uses, under the name of the project's root directory.
+
+### What a run leaves on Modal
+
+- One app per run, named `pytest-modal` (`--modal-app`). It is ephemeral, which is what lets Modal stop the
+  sandboxes of a controller that died, and like the app of a `modal run` it stays listed as stopped. The
+  summary line gives its id.
+- Sandboxes tagged `pytest-modal=<app name>` and `pytest-modal-shard=<modalN or collect>`, besides the tags
+  your `pytest_modal_sandbox` hook returns. `modal.Sandbox.list(tags={"pytest-modal": "pytest-modal"})`
+  finds what is running.
+- The disk snapshot of a run is deleted when the run ends, and expires after `modal_timeout` if the
+  controller died first.
+- The Dict of weights; an entry expires after a week without use.
 
 ## Listing the tests
 
