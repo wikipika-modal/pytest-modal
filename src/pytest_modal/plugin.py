@@ -260,11 +260,15 @@ class Controller:
         return lane
 
     def drain(self, session=None):
+        check = 0.0
         while self.live:
+            # By the clock: with many shards reporting there may be no quiet second to wait for.
+            if time.monotonic() >= check:
+                self.replace_slow_starters()
+                check = time.monotonic() + 1
             try:
                 lane, event = self.events.get(timeout=1)
             except queue.Empty:
-                self.replace_slow_starters()
                 continue
             if isinstance(event, str):
                 self.line(lane, event)
@@ -285,7 +289,9 @@ class Controller:
             if lane.stop and not lane.greeted and now - lane.launched > self.patience:
                 lane.tail.append(f"no start within {self.patience:.0f}s")
                 stop, lane.stop = lane.stop, None
-                stop()
+                # Not from this thread: stopping a sandbox is a call to Modal, and while this thread waits
+                # for one no shard's reports are read.
+                threading.Thread(target=quietly, args=(stop,), daemon=True).start()
 
     def line(self, lane, line):
         at = line.find(MARK)
@@ -454,6 +460,11 @@ def pump(backend, lane, args, events):
     except Exception as error:  # noqa: BLE001
         outcome = error
     events.put((lane, outcome))
+
+
+def quietly(stop):
+    with contextlib.suppress(Exception):
+        stop()
 
 
 def interrupt(signum, frame):

@@ -3,8 +3,11 @@ import signal
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 
 import pytest
+
+from pytest_modal.plugin import Controller
 
 COUNT_STARTS = """
 import os
@@ -91,6 +94,59 @@ def test_a_shard_that_hangs_on_start_is_replaced(pytester, sharded):
     result = sharded()
     result.assert_outcomes(passed=1)
     result.stdout.fnmatch_lines(["*1 restarts*"])
+
+
+def test_a_shard_that_hangs_on_start_is_replaced_while_others_keep_reporting(pytester, sharded):
+    """The busy shard reports several times a second until the other's replacement has started, so the
+    controller never has a quiet moment in which to notice the one that hangs."""
+    pytester.makeconftest(
+        """
+        import os, time
+        if os.environ.get("PYTEST_MODAL_SHARD") == "1":
+            open("starts", "a").write("x")
+            if len(open("starts").read()) == 1:
+                time.sleep(600)
+        """
+    )
+    pytester.makeini("[pytest]\nmodal_start_timeout = 1")
+    pytester.makepyfile(
+        test_busy="""
+            import os, time, pytest
+            @pytest.mark.parametrize("n", range(200))
+            def test_busy(n):
+                if not os.path.exists("starts") or len(open("starts").read()) < 2:
+                    time.sleep(0.3)
+            def test_the_other_shard_was_replaced_by_now():
+                assert len(open("starts").read()) == 2
+        """,
+        test_hangs="def test_hangs(): pass",
+    )
+    result = sharded("--modal-shards=2")
+    result.assert_outcomes(passed=202)
+    result.stdout.fnmatch_lines(["*1 restarts*"])
+
+
+def test_replacing_shards_does_not_wait_for_each_to_stop():
+    stopped = []
+
+    def stop():
+        time.sleep(0.5)
+        stopped.append(1)
+
+    def fails():
+        raise RuntimeError("already gone")
+
+    lanes = [SimpleNamespace(stop=stop, greeted=False, launched=0.0, tail=[]) for _ in range(8)]
+    lanes.append(SimpleNamespace(stop=fails, greeted=False, launched=0.0, tail=[]))
+    lanes.append(SimpleNamespace(stop=stop, greeted=True, launched=0.0, tail=[]))
+    started = time.monotonic()
+    Controller.replace_slow_starters(SimpleNamespace(live=lanes, patience=1.0))
+    assert time.monotonic() - started < 0.4
+    assert [lane.stop for lane in lanes[:9]] == [None] * 9 and lanes[9].stop is stop
+    deadline = time.monotonic() + 10
+    while len(stopped) < 8 and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert len(stopped) == 8
 
 
 def test_sigterm_stops_the_shards(pytester):
