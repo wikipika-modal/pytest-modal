@@ -56,6 +56,37 @@ def test_selection_is_made_by_the_controller(suite, sharded):
     sharded("-k", "param or only").assert_outcomes(passed=3, deselected=5)
 
 
+def test_a_path_equal_to_the_value_of_an_option_is_still_a_path(suite, sharded):
+    sharded("-k", "test_c.py", "test_c.py").assert_outcomes(passed=1)
+    sharded("--modal-collect=remote", "-k", "test_c.py", "test_c.py").assert_outcomes(passed=1)
+
+
+@pytest.mark.parametrize("junit", [["--junitxml=reports/out.xml"], ["--junitxml", "reports/out.xml"]])
+def test_options_naming_local_files_stay_with_the_controller(pytester, sharded, junit):
+    pytester.makepyfile(
+        """
+        def test_sees_neither(request, tmp_path):
+            assert request.config.option.xmlpath is None
+            assert "base" not in tmp_path.parts
+        """
+    )
+    sharded(*junit, "--basetemp=base").assert_outcomes(passed=1)
+    assert len(list(ET.parse(pytester.path / "reports/out.xml").iter("testcase"))) == 1
+
+
+def test_options_from_the_environment_reach_the_shards_without_the_local_files(pytester, sharded, monkeypatch):
+    monkeypatch.setenv("PYTEST_ADDOPTS", "--junitxml=reports/out.xml -o junit_suite_name=named")
+    pytester.makepyfile(
+        """
+        def test_sees_one(request):
+            assert request.config.option.xmlpath is None
+            assert request.config.getini("junit_suite_name") == "named"
+        """
+    )
+    sharded().assert_outcomes(passed=1)
+    assert ET.parse(pytester.path / "reports/out.xml").find("testsuite").get("name") == "named"
+
+
 def test_exitfirst_stops_the_session(suite, sharded):
     result = sharded("-x", "--modal-shards=1")
     result.stdout.fnmatch_lines(["*stopping after 1 failures*"])

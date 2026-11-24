@@ -23,6 +23,7 @@ from .plan import Shard, plan
 
 DURATIONS = "modal/durations"
 ISOLATED = "isolate:"
+CONTROLLER_ONLY = ("--junitxml", "--junit-xml", "--basetemp", "--cov-report", "--cov-fail-under")
 
 
 def pytest_addoption(parser):
@@ -89,10 +90,10 @@ class Controller:
     def __init__(self, config):
         self.config = config
         self.remote = config.getoption("modal_collect") == "remote"
-        given = [str(arg) for arg in config.invocation_params.args]
-        named = config.args if config.args_source == pytest.Config.ArgsSource.ARGS else []
-        self.targets = [arg for arg in given if arg in named]
-        self.given = [arg for arg in given if arg not in named] + shlex.split(config.getoption("modal_args"))
+        self.targets, options = split(config)
+        self.given = for_shards(options) + shlex.split(config.getoption("modal_args"))
+        if config.pluginmanager.hasplugin("_cov"):
+            self.given.append("--cov-report=")
         self.retries = config.getoption("modal_retries")
         self.patience = float(config.getini("modal_start_timeout"))
         self.backend = self.collector = self.starting = self.broken = None
@@ -221,6 +222,8 @@ class Controller:
     def launch(self, shard, mode="run", stalled=0):
         runner = self.collector if mode == "collect" and self.collector else self.ready()
         lane = Lane(shard, mode, self.shards, stalled)
+        if "PYTEST_ADDOPTS" in os.environ:
+            lane.env["PYTEST_ADDOPTS"] = shlex.join(for_shards(shlex.split(os.environ["PYTEST_ADDOPTS"])))
         root = self.config.rootpath
         paths = self.targets if mode == "collect" else [str(root / path) for path in shard.paths]
         args = [*self.given, f"--modal-worker={mode}", "-p", "pytest_modal.worker", "--rootdir", str(root), *paths]
@@ -377,6 +380,31 @@ class Controller:
         terminalreporter.write_line(
             f"modal: {self.shards} shards, {self.wall:.1f}s wall, {tests:.1f}s of tests{phases}{restarts}"
         )
+
+
+class Argument(str):
+    """One command-line argument, told from an equal one by identity."""
+
+
+def split(config):
+    """The positional arguments of the command line and the rest of it. pytest's parser says which are
+    which: it hands a positional argument back as the object it was given."""
+    given = [Argument(arg) for arg in config.invocation_params.args]
+    positional = {id(arg) for arg in config._parser.parse_known_args(given).file_or_dir}
+    return [arg for arg in given if id(arg) in positional], [arg for arg in given if id(arg) not in positional]
+
+
+def for_shards(options):
+    """Drop the options whose value is a file on this machine or a verdict on the whole run; the controller
+    writes those reports from what the shards send back."""
+    kept, skip = [], False
+    for option in options:
+        name, attached, _ = option.partition("=")
+        if skip or name in CONTROLLER_ONLY:
+            skip = not skip and not attached
+        else:
+            kept.append(option)
+    return kept
 
 
 def pump(backend, lane, args, events):
