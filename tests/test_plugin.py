@@ -175,6 +175,16 @@ def test_a_kept_duration_counts_time_spent_around_the_test(pytester, sharded):
     assert kept["test_a_kept_duration_counts_time_spent_around_the_test.py::test_one"] >= 0.3
 
 
+def test_a_file_that_bounds_the_run_is_named(pytester, sharded):
+    pytester.makepyfile(
+        test_long="import time\ndef test_a(): time.sleep(2.6)\ndef test_b(): time.sleep(2.6)",
+        test_short="def test_c(): pass",
+    )
+    hint = "modal: test_long.py took * of the *; --modal-group-by=test would split its tests over sandboxes"
+    sharded("--modal-shards=2").stdout.fnmatch_lines([hint])
+    assert "would split" not in sharded("--modal-shards=3", "--modal-group-by=test").stdout.str()
+
+
 def test_a_backend_that_cannot_start_is_a_usage_error(pytester, monkeypatch):
     monkeypatch.delenv("MODAL_SANDBOX_ID", raising=False)
     pytester.makepyfile("def test_one(): pass")

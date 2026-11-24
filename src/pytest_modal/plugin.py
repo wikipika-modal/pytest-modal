@@ -32,6 +32,7 @@ MOST = {"modal": 256, "local": 64}
 EARLIEST = 15
 ISOLATED = "isolate:"
 OUTPUT = ("Captured stdout", "Captured stderr")
+SLOW_FILE = 5.0
 CONTROLLER_ONLY = ("--junitxml", "--junit-xml", "--basetemp", "--cov-report", "--cov-fail-under")
 
 
@@ -463,6 +464,24 @@ class Controller:
         terminalreporter.write_line(
             f"modal: {self.shards} shards, {self.wall:.1f}s wall, {tests:.1f}s of tests{phases}{restarts}{where}"
         )
+        for line in self.advice():
+            terminalreporter.write_line(line)
+
+    def advice(self):
+        """Say so when one file is why the run took as long as it did: more sandboxes cannot shorten a file
+        that stays whole."""
+        if self.config.getoption("modal_group_by") != "file":
+            return
+        files = {}
+        for nodeid, seconds in self.spent.items():
+            path = nodeid.split("::")[0]
+            files[path] = (files[path][0] + seconds, files[path][1] + 1) if path in files else (seconds, 1)
+        path, (seconds, count) = max(files.items(), key=lambda item: item[1][0], default=("", (0.0, 0)))
+        if count > 1 and seconds >= max(SLOW_FILE, self.wall / 2):
+            yield (
+                f"modal: {path} took {seconds:.1f}s of the {self.wall:.1f}s; "
+                "--modal-group-by=test would split its tests over sandboxes"
+            )
 
 
 def most(config):
