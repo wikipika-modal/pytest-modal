@@ -10,6 +10,7 @@ import subprocess
 import sys
 import sysconfig
 import tempfile
+import threading
 import time
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -24,6 +25,9 @@ IGNORE = [".git", ".venv", "**/__pycache__", "**/*.pyc", "**/node_modules"]
 SITE = "/usr/local/lib/python{}/site-packages"
 NOT_MIRRORED = {"pytest-modal", "pip"}
 STORE = "pytest-modal"
+# Shards that may be starting at once. The Modal client does its work on one thread, which this many keep
+# busy: past it every shard waited for all the others, 6 s at 1,024 and 19 s at 2,765 against 1.5 s.
+STARTING = 128
 CREDENTIALS = (
     "MODAL_TOKEN_ID",
     "MODAL_TOKEN_SECRET",
@@ -136,6 +140,8 @@ class Modal:
         }
         self.tags = {"pytest-modal": self.app.name, **self.options.pop("tags", {})}
         self.snapshots = []
+        self.gate = threading.BoundedSemaphore(STARTING)
+        self.closed = False
         # The app stops with this block if anything in it fails, and the snapshots go once it has.
         with contextlib.ExitStack() as stack:
             stack.callback(self.forget)
@@ -194,23 +200,30 @@ class Modal:
 
     def run(self, lane, args, emit) -> int:
         tags = {**self.tags, "pytest-modal-shard": lane.gateway.id if lane.mode == "run" else lane.mode}
-        box = self.modal.Sandbox.create("sleep", "infinity", app=self.app, image=self.image, tags=tags, **self.options)
-        lane.stop = box.terminate
-        lane.shard.where = box.object_id
-        lane.created = time.monotonic() - lane.launched
-        process = box.exec(
-            "sh",
-            "-c",
-            'exec "$@" 2>&1',
-            "sh",
-            *self.command,
-            *args,
-            workdir=self.cwd,
-            env={**self.env, **lane.env},
-        )
-        process.stdin.write("\n".join(lane.shard.ids))
-        process.stdin.write_eof()
-        process.stdin.drain()
+        with self.gate:
+            if self.closed:
+                raise RuntimeError("the run ended before this shard's turn to start")
+            # The shard's clock starts with its turn, not with the wait for it.
+            lane.queued, lane.launched = time.monotonic() - lane.launched, time.monotonic()
+            box = self.modal.Sandbox.create(
+                "sleep", "infinity", app=self.app, image=self.image, tags=tags, **self.options
+            )
+            lane.stop = box.terminate
+            lane.shard.where = box.object_id
+            lane.created = time.monotonic() - lane.launched
+            process = box.exec(
+                "sh",
+                "-c",
+                'exec "$@" 2>&1',
+                "sh",
+                *self.command,
+                *args,
+                workdir=self.cwd,
+                env={**self.env, **lane.env},
+            )
+            process.stdin.write("\n".join(lane.shard.ids))
+            process.stdin.write_eof()
+            process.stdin.drain()
         code = None
         for line in lines(process.stdout):
             emit(line)
@@ -223,6 +236,7 @@ class Modal:
         return code
 
     def close(self):
+        self.closed = True
         self.stack.close()
 
 

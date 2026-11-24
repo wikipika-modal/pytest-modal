@@ -87,7 +87,7 @@ class Lane:
         self.greeted = self.bye = False
         self.tail = deque(maxlen=15)
         self.launched = time.monotonic()
-        self.created = self.up = self.seconds = 0.0
+        self.queued = self.created = self.up = self.seconds = 0.0
         self.stop = None
         self.outcome = None
 
@@ -190,7 +190,9 @@ class Controller:
         started = time.monotonic()
         try:
             with calm():
-                for shard in shards:
+                # Heaviest first: the backend may start them a few at a time, and the run ends no sooner
+                # than the heaviest does.
+                for shard in sorted(shards, key=lambda shard: -shard.weight):
                     self.launch(shard)
                 self.drain(session)
         finally:
@@ -414,6 +416,8 @@ class Controller:
         where = f", {self.backend.name}" if self.backend.name else ""
         up = sorted(lane.up for lane in ran if lane.greeted)
         phases += f", shards up in {up[len(up) // 2]:.1f}s (slowest {up[-1]:.1f}s)" if up else ""
+        queued = max(lane.queued for lane in ran)
+        phases += f", the last waited {queued:.1f}s for its turn to start" if queued >= 1 else ""
         terminalreporter.write_line(
             f"modal: {self.shards} shards, {self.wall:.1f}s wall, {tests:.1f}s of tests{phases}{restarts}{where}"
         )

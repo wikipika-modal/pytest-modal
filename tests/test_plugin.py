@@ -122,6 +122,17 @@ def test_exitfirst_stops_the_session(suite, sharded):
     assert "test_output" not in result.stdout.str()
 
 
+def test_the_heaviest_shard_is_launched_first(pytester, sharded):
+    pytester.makeini("[pytest]\nmodal_isolate = test_c.py")
+    pytester.makepyfile(test_a="def test_a(): pass", test_b="def test_b(): pass", test_c="def test_c(): pass")
+    kept = pytester.path / ".pytest_cache/v/modal/durations"
+    kept.parent.mkdir(parents=True)
+    kept.write_text(json.dumps({"test_a.py::test_a": 1.0, "test_b.py::test_b": 2.0, "test_c.py::test_c": 9.0}))
+    # The summary lists the shards in the order they were launched; an isolated file's shard is numbered last.
+    lines = [line.split()[0] for line in sharded("-v").stdout.lines if line.startswith("modal") and " pid " in line]
+    assert lines == ["modal2", "modal0", "modal1"]
+
+
 def test_durations_are_kept_for_the_next_plan(pytester, sharded):
     pytester.makepyfile("def test_one(): pass")
     sharded()
