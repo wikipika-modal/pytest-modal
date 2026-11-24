@@ -8,6 +8,8 @@ version = "0.0.1"
 description = "Run a pytest session's tests across Modal sandboxes"
 readme = "README.md"
 requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 authors = [{ name = "Modal Labs" }]
 keywords = ["pytest", "modal", "sandbox", "parallel", "distributed", "testing"]
 classifiers = [
