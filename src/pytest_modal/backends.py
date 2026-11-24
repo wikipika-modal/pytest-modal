@@ -10,6 +10,7 @@ import subprocess
 import sys
 import sysconfig
 import tempfile
+import threading
 import time
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -24,6 +25,9 @@ IGNORE = [".git", ".venv", "**/__pycache__", "**/*.pyc", "**/node_modules"]
 SITE = "/usr/local/lib/python{}/site-packages"
 NOT_MIRRORED = {"pytest-modal", "pip"}
 STORE = "pytest-modal"
+# Shards that may be starting at once. The Modal client does its work on one thread, which this many keep
+# busy: past it every shard waited for all the others, 6 s at 1,024 and 19 s at 2,765 against 1.5 s.
+STARTING = 128
 CREDENTIALS = (
     "MODAL_TOKEN_ID",
     "MODAL_TOKEN_SECRET",
@@ -110,6 +114,9 @@ class Local:
             emit(line)
         return process.wait()
 
+    def full(self, outcome) -> bool:
+        return False
+
     def weights(self, project) -> dict:
         return {}
 
@@ -136,6 +143,8 @@ class Modal:
         }
         self.tags = {"pytest-modal": self.app.name, **self.options.pop("tags", {})}
         self.snapshots = []
+        self.gate = threading.BoundedSemaphore(STARTING)
+        self.closed = False
         # The app stops with this block if anything in it fails, and the snapshots go once it has.
         with contextlib.ExitStack() as stack:
             stack.callback(self.forget)
@@ -155,6 +164,11 @@ class Modal:
         for image in self.snapshots:
             with contextlib.suppress(self.modal.exception.Error):
                 self.modal.experimental.image_delete(image)
+
+    def full(self, outcome) -> bool:
+        """Whether a shard ended this way because Modal has no room for another sandbox: a limit on how many
+        run at once, or on how fast they are created, which the client has by then waited on and retried."""
+        return isinstance(outcome, self.modal.exception.ResourceExhaustedError)
 
     def weights(self, project) -> dict:
         try:
@@ -194,26 +208,32 @@ class Modal:
 
     def run(self, lane, args, emit) -> int:
         tags = {**self.tags, "pytest-modal-shard": lane.gateway.id if lane.mode == "run" else lane.mode}
-        box = self.modal.Sandbox.create("sleep", "infinity", app=self.app, image=self.image, tags=tags, **self.options)
-        lane.stop = box.terminate
-        lane.shard.where = box.object_id
-        lane.created = time.monotonic() - lane.launched
-        process = box.exec(
-            "sh",
-            "-c",
-            'exec "$@" 2>&1',
-            "sh",
-            *self.command,
-            *args,
-            workdir=self.cwd,
-            env={**self.env, **lane.env},
-            bufsize=1,
-        )
-        process.stdin.write("\n".join(lane.shard.ids))
-        process.stdin.write_eof()
-        process.stdin.drain()
+        with self.gate:
+            if self.closed:
+                raise RuntimeError("the run ended before this shard's turn to start")
+            # The shard's clock starts with its turn, not with the wait for it.
+            lane.queued, lane.launched = time.monotonic() - lane.launched, time.monotonic()
+            box = self.modal.Sandbox.create(
+                "sleep", "infinity", app=self.app, image=self.image, tags=tags, **self.options
+            )
+            lane.stop = box.terminate
+            lane.shard.where = box.object_id
+            lane.created = time.monotonic() - lane.launched
+            process = box.exec(
+                "sh",
+                "-c",
+                'exec "$@" 2>&1',
+                "sh",
+                *self.command,
+                *args,
+                workdir=self.cwd,
+                env={**self.env, **lane.env},
+            )
+            process.stdin.write("\n".join(lane.shard.ids))
+            process.stdin.write_eof()
+            process.stdin.drain()
         code = None
-        for line in process.stdout:
+        for line in lines(process.stdout):
             emit(line)
             # After its goodbye a shard only has an interpreter to shut down, which nothing waits for.
             if BYE in line:
@@ -224,7 +244,19 @@ class Modal:
         return code
 
     def close(self):
+        self.closed = True
         self.stack.close()
+
+
+def lines(pieces):
+    """The lines of text that arrives in pieces. Asked for a line at a time, the Modal client makes a trip to
+    its event loop for every line, which at a thousand shards is most of what the controller does."""
+    rest = ""
+    for piece in pieces:
+        *whole, rest = (rest + piece).split("\n")
+        yield from whole
+    if rest:
+        yield rest
 
 
 def environment(folders=None):

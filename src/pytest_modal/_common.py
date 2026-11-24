@@ -25,7 +25,12 @@ def add_options(parser) -> None:
     group = parser.getgroup("modal", "run tests in Modal sandboxes")
     group.addoption("--modal", action="store_true", help="run the collected tests in Modal sandboxes")
     group.addoption("--modal-shards", default="auto", metavar="N", help="number of sandboxes, or auto (default)")
-    group.addoption("--modal-max-shards", type=int, default=64, metavar="N", help="upper bound for auto (default 64)")
+    group.addoption(
+        "--modal-max-shards",
+        type=int,
+        metavar="N",
+        help="upper bound for auto (default 256 sandboxes, or 64 processes with --modal-backend=local)",
+    )
     group.addoption("--modal-group-by", choices=("file", "test"), default="file", help="what stays in one sandbox")
     group.addoption(
         "--modal-collect",

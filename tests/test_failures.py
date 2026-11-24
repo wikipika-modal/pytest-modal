@@ -1,10 +1,14 @@
 import os
+import queue
 import signal
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 
 import pytest
+
+from pytest_modal.plugin import Controller, pump
 
 COUNT_STARTS = """
 import os
@@ -91,6 +95,137 @@ def test_a_shard_that_hangs_on_start_is_replaced(pytester, sharded):
     result = sharded()
     result.assert_outcomes(passed=1)
     result.stdout.fnmatch_lines(["*1 restarts*"])
+
+
+def test_a_shard_that_hangs_on_start_is_replaced_while_others_keep_reporting(pytester, sharded):
+    """The busy shard reports several times a second until the other's replacement has started, so the
+    controller never has a quiet moment in which to notice the one that hangs."""
+    pytester.makeconftest(
+        """
+        import os, time
+        if os.environ.get("PYTEST_MODAL_SHARD") == "1":
+            open("starts", "a").write("x")
+            if len(open("starts").read()) == 1:
+                time.sleep(600)
+        """
+    )
+    pytester.makeini("[pytest]\nmodal_start_timeout = 1")
+    pytester.makepyfile(
+        test_busy="""
+            import os, time, pytest
+            @pytest.mark.parametrize("n", range(200))
+            def test_busy(n):
+                if not os.path.exists("starts") or len(open("starts").read()) < 2:
+                    time.sleep(0.3)
+            def test_the_other_shard_was_replaced_by_now():
+                assert len(open("starts").read()) == 2
+        """,
+        test_hangs="def test_hangs(): pass",
+    )
+    result = sharded("--modal-shards=2")
+    result.assert_outcomes(passed=202)
+    result.stdout.fnmatch_lines(["*1 restarts*"])
+
+
+def test_replacing_shards_does_not_wait_for_each_to_stop():
+    stopped = []
+
+    def stop():
+        time.sleep(0.5)
+        stopped.append(1)
+
+    def fails():
+        raise RuntimeError("already gone")
+
+    lanes = [SimpleNamespace(stop=stop, greeted=False, launched=0.0, tail=[], stalled=0) for _ in range(8)]
+    lanes.append(SimpleNamespace(stop=fails, greeted=False, launched=0.0, tail=[], stalled=0))
+    lanes.append(SimpleNamespace(stop=stop, greeted=True, launched=0.0, tail=[], stalled=0, up=0.1))
+    started = time.monotonic()
+    Controller.replace_slow_starters(SimpleNamespace(live=lanes, lanes=lanes, patience=1.0))
+    assert time.monotonic() - started < 0.4
+    assert [lane.stop for lane in lanes[:9]] == [None] * 9 and lanes[9].stop is stop
+    deadline = time.monotonic() + 10
+    while len(stopped) < 8 and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert len(stopped) == 8
+
+
+def test_a_first_start_far_behind_the_others_is_replaced_before_the_timeout():
+    now = time.monotonic()
+
+    def starting(seconds, stalled=0):
+        return SimpleNamespace(stop=lambda: None, greeted=False, launched=now - seconds, tail=[], stalled=stalled)
+
+    def slow_starters(up, patience=300.0):
+        others = [SimpleNamespace(stop=None, greeted=True, up=up, stalled=0) for _ in range(9)]
+        lanes = {"late": starting(20), "later": starting(40), "second try": starting(40, stalled=1)}
+        controller = SimpleNamespace(live=list(lanes.values()), lanes=[*others, *lanes.values()], patience=patience)
+        Controller.replace_slow_starters(controller)
+        return [name for name, lane in lanes.items() if lane.stop is None]
+
+    assert slow_starters(up=1.5) == ["late", "later"]
+    assert slow_starters(up=3.0) == ["later"]
+    assert slow_starters(up=30.0) == []
+    assert slow_starters(up=1.5, patience=10.0) == ["late", "later", "second try"]
+    few = [SimpleNamespace(stop=None, greeted=True, up=1.5, stalled=0) for _ in range(3)]
+    late = starting(40)
+    Controller.replace_slow_starters(SimpleNamespace(live=[late], lanes=[*few, late], patience=300.0))
+    assert late.stop is not None
+
+
+def test_a_shard_that_fails_after_its_sandbox_started_stops_the_sandbox():
+    stopped, events = [], queue.Queue()
+
+    class Backend:
+        def run(self, lane, args, emit):
+            lane.stop = lambda: stopped.append(lane)
+            raise ConnectionError("lost the sandbox's output")
+
+    lane = SimpleNamespace(stop=None)
+    pump(Backend(), lane, [], events)
+    assert stopped == [lane]
+    assert isinstance(events.get_nowait()[1], ConnectionError)
+
+
+ROOM_FOR = """
+import threading
+from pytest_modal import backends
+
+class NoRoom(Exception):
+    pass
+
+room = threading.Semaphore({room})
+run = backends.Local.run
+
+def limited(self, lane, args, emit):
+    open("attempts", "a").write("x")
+    if not room.acquire(blocking=False):
+        raise NoRoom("Concurrent sandbox limit ({room}) exceeded")
+    try:
+        return run(self, lane, args, emit)
+    finally:
+        room.release()
+
+backends.Local.run = limited
+backends.Local.full = lambda self, outcome: isinstance(outcome, NoRoom)
+"""
+
+
+def test_shards_there_is_no_room_for_wait_for_others_to_finish(pytester, sharded):
+    """Only the controller loads modal_conf.py, where the local backend is given room for two shards."""
+    pytester.makepyfile(modal_conf=ROOM_FOR.format(room=2), **{f"test_{n}": "def test_one(): pass" for n in range(6)})
+    result = sharded("--modal-shards=6", "--modal-retries=0")
+    result.assert_outcomes(passed=6)
+    result.stdout.fnmatch_lines(["modal: no room for another sandbox (Concurrent sandbox limit (2) exceeded)*"])
+    assert result.stdout.str().count("no room for another sandbox") == 1
+
+
+def test_with_no_room_and_nothing_to_wait_for_shards_fail_after_their_retries(pytester, sharded):
+    pytester.makepyfile(modal_conf=ROOM_FOR.format(room=0), **{f"test_{n}": "def test_one(): pass" for n in range(4)})
+    result = sharded("--modal-shards=4", "--modal-retries=1")
+    result.assert_outcomes(errors=4)
+    result.stdout.fnmatch_lines(["*Concurrent sandbox limit (0) exceeded*without running this test*"])
+    assert len((pytester.path / "attempts").read_text()) <= 4 * 2
 
 
 def test_sigterm_stops_the_shards(pytester):

@@ -4,6 +4,7 @@ import xml.etree.ElementTree as ET
 import pytest
 
 from pytest_modal._common import BYE, MARK
+from pytest_modal.plugin import most
 
 
 @pytest.fixture
@@ -122,11 +123,41 @@ def test_exitfirst_stops_the_session(suite, sharded):
     assert "test_output" not in result.stdout.str()
 
 
+def test_the_heaviest_shard_is_launched_first(pytester, sharded):
+    pytester.makeini("[pytest]\nmodal_isolate = test_c.py")
+    pytester.makepyfile(test_a="def test_a(): pass", test_b="def test_b(): pass", test_c="def test_c(): pass")
+    kept = pytester.path / ".pytest_cache/v/modal/durations"
+    kept.parent.mkdir(parents=True)
+    kept.write_text(json.dumps({"test_a.py::test_a": 1.0, "test_b.py::test_b": 2.0, "test_c.py::test_c": 9.0}))
+    # The summary lists the shards in the order they were launched; an isolated file's shard is numbered last.
+    lines = [line.split()[0] for line in sharded("-v").stdout.lines if line.startswith("modal") and " pid " in line]
+    assert lines == ["modal2", "modal0", "modal1"]
+
+
 def test_durations_are_kept_for_the_next_plan(pytester, sharded):
     pytester.makepyfile("def test_one(): pass")
     sharded()
     result = pytester.runpytest_subprocess("--cache-show", "modal/*")
     result.stdout.fnmatch_lines(["*modal/durations*", "*test_one*"])
+
+
+def test_auto_asks_for_at_most_256_sandboxes_or_64_local_processes(pytester):
+    # Nothing signs in to Modal when the tests are only listed.
+    assert most(pytester.parseconfig("--modal", "--collect-only")) == 256
+    assert most(pytester.parseconfig("--modal", "--collect-only", "--modal-backend=local")) == 64
+    assert most(pytester.parseconfig("--modal", "--collect-only", "--modal-max-shards=7")) == 7
+
+
+def test_what_a_shard_costs_to_start_is_kept_and_bounds_the_next_auto_count(pytester, sharded):
+    pytester.makepyfile(**{f"test_{n}": "def test_one(): pass" for n in range(8)})
+    sharded().stdout.fnmatch_lines(["modal: 8 shards*"])
+    kept = pytester.path / ".pytest_cache/v/modal/durations"
+    weights = json.loads(kept.read_text())
+    # A shard's whole time less its tests': an interpreter and pytest to start, a file to collect.
+    assert 0.05 < weights["shard start"] < 30
+    assert sum(seconds for nodeid, seconds in weights.items() if "::" in nodeid) < weights["shard start"]
+    sharded().stdout.fnmatch_lines(["modal: 1 shards*"])
+    sharded("--modal-shards=8").stdout.fnmatch_lines(["modal: 8 shards*"])
 
 
 def test_a_kept_duration_counts_time_spent_around_the_test(pytester, sharded):

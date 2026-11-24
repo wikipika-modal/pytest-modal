@@ -23,12 +23,16 @@ def plan(
     durations: dict[str, float],
     limit: int,
     alone: frozenset[str] = frozenset(),
+    start: float = 0.0,
 ) -> list[Shard]:
     """Split (nodeid, group) pairs, given in collection order, into shards of similar expected time.
 
     A group never spans two shards, and each group named in `alone` has a shard to itself. No number of
     sandboxes finishes before the heaviest group does. With no shard count the plan fills shards to half
-    that group's weight: a shard also pays to start, and tests cost more in a process that ran others.
+    that group's weight, in at most `limit` shards: a shard also pays to start, and tests cost more in a
+    process that ran others. It fills them to no less than `start`, what a shard costs before its first test
+    and after its last, in the unit of the weights: lighter shards would spend most of their time starting.
+    A count that is given is not held to `limit`.
     """
     default = median(durations.values()) if durations else 1.0
     members: dict[str, list[int]] = {}
@@ -39,10 +43,12 @@ def plan(
     apart = [group for group in members if group in alone]
     packed = sorted((group for group in members if group not in alone), key=lambda name: -weights[name])
     if shards is None:
-        wanted = math.ceil(2 * sum(weights[group] for group in packed) / weights[packed[0]]) if packed else 0
+        fill = max(weights[packed[0]] / 2, start) if packed else 0
+        wanted = math.ceil(sum(weights[group] for group in packed) / fill) if fill else 0
+        wanted = min(wanted, limit - len(apart))
     else:
         wanted = shards - len(apart)
-    shared = min(max(wanted, 1), len(packed), max(limit - len(apart), 1))
+    shared = min(max(wanted, 1), len(packed))
     bins = [Shard(index) for index in range(shared + len(apart))]
     positions: list[list[int]] = [[] for _ in bins]
     for shard, group in zip(bins[shared:], apart):

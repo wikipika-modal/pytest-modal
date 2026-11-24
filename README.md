@@ -99,10 +99,13 @@ not kept from it by this: for code you do not trust, use `--modal-from=<sandbox 
 ### How many sandboxes
 
 No number of sandboxes finishes before the heaviest group (a file, by default) does. `--modal-shards=auto`
-fills shards to half that group's weight, up to `--modal-max-shards`. Weights are the wall time each test
-cost its shard in earlier runs; a test never seen weighs the median. They are kept in `.pytest_cache` and,
-for machines that keep no cache between runs, in a Modal Dict named `pytest-modal` in the environment the
-run uses, under the name of the project's root directory.
+fills shards to half that group's weight, and to no less than a shard was measured to cost besides its
+tests (a sandbox and an interpreter to start, files to collect), up to `--modal-max-shards`. A number given
+to `--modal-shards` is used as given, however large; shards start 128 at a time, the heaviest first, and
+the summary line says how long the last one waited. Weights are the wall time each test cost its shard in
+earlier runs; a test never seen weighs the median. They are kept in `.pytest_cache` and, for machines that
+keep no cache between runs, in a Modal Dict named `pytest-modal` in the environment the run uses, under the
+name of the project's root directory.
 
 ### What a run leaves on Modal
 
@@ -128,7 +131,7 @@ run uses, under the name of the project's root directory.
 
 ## Configuration
 
-Options: `--modal-shards`, `--modal-max-shards` (64), `--modal-group-by=file|test`,
+Options: `--modal-shards`, `--modal-max-shards` (256, or 64 local processes), `--modal-group-by=file|test`,
 `--modal-collect=local|remote`, `--modal-from=auto|upload|disk|ID`, `--modal-workdir`, `--modal-retries` (2),
 `--modal-args`, `--modal-backend=modal|local`, `--modal-app`.
 
@@ -140,7 +143,7 @@ Ini values:
 | `modal_python` | Interpreter the shards run |
 | `modal_conf` | File with the hooks below (`modal_conf.py`) |
 | `modal_timeout` | Seconds a sandbox may live (3600) |
-| `modal_start_timeout` | Seconds a shard may take to start before it is replaced (300) |
+| `modal_start_timeout` | Seconds a shard may take to start before it is replaced (300); see below |
 
 `modal_isolate` is for order dependencies a suite has and does not declare: files that pass only in a
 process that also loaded another file go on one line, and a file that fails after certain others goes on a
@@ -175,7 +178,8 @@ def pytest_modal_sandbox(config):  # keyword arguments for modal.Sandbox.create
 | --- | --- |
 | A sandbox dies while running a test | That test fails with the sandbox's last output; the rest of the shard runs in a new sandbox |
 | A sandbox dies or fails to start before running anything | The shard is retried, `--modal-retries` times |
-| A sandbox does not start within `modal_start_timeout` | It is replaced |
+| Modal has no room for another sandbox (a limit on how many the workspace runs) | The shard waits, using no retry, and starts when a sandbox of the run ends |
+| A sandbox does not start within `modal_start_timeout`, or its first start takes ten times as long as most of the run's and more than 15 s | It is replaced |
 | A shard does not collect a test the controller listed | That test is an error |
 | The controller is interrupted or terminated | It stops its sandboxes |
 | The controller is killed outright | Modal stops the run's app and its sandboxes when the heartbeat lapses (about 3 minutes) |
@@ -213,6 +217,24 @@ run is as long as the suite's longest file, 136 s here, which is why `--modal-gr
 faster. Coverage came to the same 21,845 statements; 5 lines differed, all reached only by tests that draw
 unseeded random numbers.
 
+The same suite with `--modal-group-by=test` and the shard count given, up to a sandbox for each test. One
+test of 44 s bounds every one of these runs (31 to 53 s), so the columns are what the count changes. Upload;
+a disk snapshot gives much the same.
+
+| Shards | A shard is up in (median) | The last one is up after | Controller CPU | Sandbox-seconds |
+| --- | --- | --- | --- | --- |
+| 64 | 1.3 s | 4.3 s | 2.9 s | 1,158 |
+| 128 | 1.3 s | 2.7 s | 3.4 s | 1,424 |
+| 256 | 1.4 s | 3.7 s | 4.7 s | 2,001 |
+| 512 | 1.6 s | 5.2 s | 6.8 s | 2,603 |
+| 1,024 | 1.8 s | 13.9 s | 12.0 s | 4,643 |
+| 2,765 (one per test) | 2.0 s | 30.4 s | 30.8 s | 9,699 |
+
+Every run reports what a plain run does, test by test, with no shard restarted and nothing refused by
+Modal. The controller starts about 80 shards a second on one core, so past a few hundred the later ones
+wait for their turn. A shard costs 3 to 5 s besides its tests, which is why sandbox-seconds grow with the
+count. The controller keeps a thread and about 0.4 MB for each shard: 1.1 GB at 2,765.
+
 pybind11's pytest suite (1,138 to 1,483 tests on each of six interpreters, C++ modules built in a runner
 sandbox, shards from its disk, `--modal-collect=remote`, default shard count): every row reports the same
 counts as a plain run. With a warm build the six rows finish in 15 to 21 s; a row's pytest step takes 5 to
@@ -232,9 +254,10 @@ counts as a plain run. With a warm build the six rows finish in 15 to 21 s; a ro
 
 - With `-s`, what a test wrote is shown when that test finishes, not while it runs. `--pdb` and `--trace`
   are refused: there is no terminal where the test runs.
-- One thread per shard in the controller.
-- The auto shard count ignores what a sandbox costs to start, and on a first run, with no weights, it
-  counts tests: a file holding half the tests gets half the weight whatever it costs.
+- The controller is one process with a thread per shard and starts about 80 shards a second. Starting a
+  thousand in a second or two would take sandboxes driven from several processes.
+- On a first run, with no weights, the auto shard count counts tests: a file holding half the tests gets
+  half the weight whatever it costs.
 - A shard collects the whole of each file it has a test from.
 - With `--modal-from=ID` the controller has none of the project, so `--cov` reports need the sources at the
   same paths where it runs, and options a plugin of the project defines go through `--modal-args`.

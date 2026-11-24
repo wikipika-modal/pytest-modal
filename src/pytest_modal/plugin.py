@@ -23,6 +23,13 @@ from .backends import BACKENDS, Local, origin, sign_in, without_modal
 from .plan import Shard, plan
 
 DURATIONS = "modal/durations"
+# Kept with the weights, under a name no test has: the seconds a shard costs besides its tests.
+START = "shard start"
+# The most shards auto asks for. Up to 256 sandboxes the controller starts them as fast as it does 64; local
+# shards are processes on this machine.
+MOST = {"modal": 256, "local": 64}
+# Seconds before which no shard is replaced for being slower to start than the others.
+EARLIEST = 15
 ISOLATED = "isolate:"
 OUTPUT = ("Captured stdout", "Captured stderr")
 SLOW_FILE = 5.0
@@ -88,7 +95,7 @@ class Lane:
         self.greeted = self.bye = False
         self.tail = deque(maxlen=15)
         self.launched = time.monotonic()
-        self.created = self.up = self.seconds = 0.0
+        self.queued = self.created = self.up = self.seconds = self.spent = 0.0
         self.stop = None
         self.outcome = None
 
@@ -120,6 +127,7 @@ class Controller:
         self.lanes = []
         self.live = set()
         self.restarts = 0
+        self.waiting = []
         self.shards = 0
         self.tests = []
         self.locations = {}
@@ -181,7 +189,8 @@ class Controller:
         project = (self.root or config.rootpath).name
         known = {**self.ready().weights(project), **(cache.get(DURATIONS, {}) if cache else {})}
         count = None if config.getoption("modal_shards") == "auto" else int(config.getoption("modal_shards"))
-        shards = plan(tests, count, known, config.getoption("modal_max_shards"), alone)
+        start = known.pop(START, 0.0)
+        shards = plan(tests, count, known, most(config), alone, start)
         self.shards = len(shards)
         terminal = config.pluginmanager.get_plugin("terminalreporter")
         if terminal:
@@ -191,16 +200,20 @@ class Controller:
         started = time.monotonic()
         try:
             with calm():
-                for shard in shards:
+                # Heaviest first: the backend may start them a few at a time, and the run ends no sooner
+                # than the heaviest does.
+                for shard in sorted(shards, key=lambda shard: -shard.weight):
                     self.launch(shard)
                 self.drain(session)
         finally:
             if main:
                 signal.signal(signal.SIGTERM, previous)
             self.wall = time.monotonic() - started
+            costs = sorted(lane.seconds - lane.spent for lane in self.lanes if lane.mode == "run" and lane.bye)
+            kept = {**known, **self.spent, START: costs[len(costs) // 2] if costs else start}
             if cache:
-                cache.set(DURATIONS, {**known, **self.spent})
-            self.backend.keep(project, {**known, **self.spent})
+                cache.set(DURATIONS, kept)
+            self.backend.keep(project, kept)
         return True
 
     def group(self, nodeid, marked):
@@ -259,11 +272,21 @@ class Controller:
         return lane
 
     def drain(self, session=None):
-        while self.live:
+        check = 0.0
+        while self.live or self.waiting:
+            if not self.live:
+                # No sandbox of this run is left to make room, so these were starts that failed.
+                waiting, self.waiting = self.waiting, []
+                for lane in waiting:
+                    self.finish(lane, waited=True)
+                continue
+            # By the clock: with many shards reporting there may be no quiet second to wait for.
+            if time.monotonic() >= check:
+                self.replace_slow_starters()
+                check = time.monotonic() + 1
             try:
                 lane, event = self.events.get(timeout=1)
             except queue.Empty:
-                self.replace_slow_starters()
                 continue
             if isinstance(event, str):
                 self.line(lane, event)
@@ -273,6 +296,9 @@ class Controller:
                 lane.outcome = event
                 if lane.mode == "run":
                     self.finish(lane)
+                    if self.waiting and lane.shard.where:
+                        waiter = self.waiting.pop(0)
+                        self.again(waiter, waiter.stalled)
             if session is not None and session.shouldfail:
                 raise session.Failed(session.shouldfail)
             if session is not None and session.shouldstop:
@@ -280,11 +306,18 @@ class Controller:
 
     def replace_slow_starters(self):
         now = time.monotonic()
+        # Among hundreds of sandboxes one may take a minute to answer, and the run would wait for it: a first
+        # start that takes ten times as long as most is given up for another.
+        up = sorted(lane.up for lane in self.lanes if lane.greeted)
+        early = max(10 * up[len(up) // 2], EARLIEST) if len(up) >= 8 else self.patience
         for lane in self.live:
-            if lane.stop and not lane.greeted and now - lane.launched > self.patience:
-                lane.tail.append(f"no start within {self.patience:.0f}s")
+            patience = self.patience if lane.stalled else min(self.patience, early)
+            if lane.stop and not lane.greeted and now - lane.launched > patience:
+                lane.tail.append(f"no start within {patience:.0f}s")
                 stop, lane.stop = lane.stop, None
-                stop()
+                # Not from this thread: stopping a sandbox is a call to Modal, and while this thread waits
+                # for one no shard's reports are read.
+                threading.Thread(target=quietly, args=(stop,), daemon=True).start()
 
     def line(self, lane, line):
         at = line.find(MARK)
@@ -341,6 +374,7 @@ class Controller:
         elif kind == "logfinish":
             lane.current = None
             self.spent[event["nodeid"]] = event["took"]
+            lane.spent += event["took"]
             hook.pytest_runtest_logfinish(nodeid=event["nodeid"], location=tuple(event["location"]))
         else:
             report = hook.pytest_report_from_serializable(config=self.config, data=event["report"])
@@ -362,7 +396,7 @@ class Controller:
                 report.sections = [section for section in report.sections if section not in written]
             hook.pytest_runtest_logreport(report=report)
 
-    def finish(self, lane):
+    def finish(self, lane, waited=False):
         for nodeid in lane.missing:
             if nodeid in lane.pending:
                 del lane.pending[nodeid]
@@ -374,13 +408,23 @@ class Controller:
         left = list(lane.pending)
         if not left:
             return
+        if not waited and self.live and self.backend.full(lane.outcome):
+            # Not a start that failed: Modal has no room, and takes the shard when a sandbox of this run ends.
+            # Trying again at once would spend every retry in the same second.
+            if not self.waiting:
+                self.say(f"modal: no room for another sandbox ({lane.outcome}); shards wait for others to finish")
+            self.waiting.append(lane)
+            return
         stalled = 0 if crashed or lane.finished else lane.stalled + 1
         if lane.bye or stalled > self.retries:
             for nodeid in left:
                 self.fail(lane, nodeid, "setup", "without running this test")
             return
+        self.again(lane, stalled)
+
+    def again(self, lane, stalled):
         self.restarts += 1
-        self.launch(Shard(lane.shard.index, left), stalled=stalled)
+        self.launch(Shard(lane.shard.index, list(lane.pending), lane.shard.weight), stalled=stalled)
 
     def fail(self, lane, nodeid, when, what):
         text = "\n".join([f"{lane.ended()} {what}", *lane.tail])
@@ -415,6 +459,8 @@ class Controller:
         where = f", {self.backend.name}" if self.backend.name else ""
         up = sorted(lane.up for lane in ran if lane.greeted)
         phases += f", shards up in {up[len(up) // 2]:.1f}s (slowest {up[-1]:.1f}s)" if up else ""
+        queued = max(lane.queued for lane in ran)
+        phases += f", the last waited {queued:.1f}s for its turn to start" if queued >= 1 else ""
         terminalreporter.write_line(
             f"modal: {self.shards} shards, {self.wall:.1f}s wall, {tests:.1f}s of tests{phases}{restarts}{where}"
         )
@@ -436,6 +482,10 @@ class Controller:
                 f"modal: {path} took {seconds:.1f}s of the {self.wall:.1f}s; "
                 "--modal-group-by=test would split its tests over sandboxes"
             )
+
+
+def most(config):
+    return config.getoption("modal_max_shards") or MOST[config.getoption("modal_backend")]
 
 
 class Argument(str):
@@ -468,7 +518,15 @@ def pump(backend, lane, args, events):
         outcome = backend.run(lane, args, lambda line: events.put((lane, line)))
     except Exception as error:  # noqa: BLE001
         outcome = error
+        # What the shard started is of no more use, and would hold its place on Modal until the run ends.
+        if lane.stop:
+            quietly(lane.stop)
     events.put((lane, outcome))
+
+
+def quietly(stop):
+    with contextlib.suppress(Exception):
+        stop()
 
 
 def interrupt(signum, frame):
