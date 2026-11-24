@@ -1,0 +1,76 @@
+name: CI
+
+# A branch of this repository is checked when it is pushed; pull_request is for forks.
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  lint:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          enable-cache: false
+      - run: uv sync --locked
+      - run: uv run ruff check
+      - run: uv run ruff format --check
+
+  # The local backend runs each shard as a subprocess, so these need no Modal account.
+  test:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13", "3.14", "3.15"]
+        # lowest-direct: the oldest pytest and modal pyproject.toml allows. highest: the newest releases.
+        install: ["--resolution lowest-direct", "--resolution highest"]
+        include:
+          # The pytest minors in between, on one Python.
+          - { python: "3.12", install: "pytest==8.1.*" }
+          - { python: "3.12", install: "pytest==8.2.*" }
+          - { python: "3.12", install: "pytest==8.3.*" }
+          - { python: "3.12", install: "pytest==8.4.*" }
+          - { python: "3.12", install: "pytest==9.0.*" }
+          - { python: "3.12", install: "pytest==9.1.*" }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          python-version: ${{ matrix.python }}
+          activate-environment: true
+          enable-cache: false
+      - run: uv pip install --editable . --group test ${{ matrix.install }}
+      - run: pytest
+
+  build:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          activate-environment: true
+          enable-cache: false
+      - run: uv build
+      - run: uvx twine check --strict dist/*
+      - name: Run the tests against the built wheel
+        run: |
+          uv pip install dist/*.whl --group test
+          pytest
