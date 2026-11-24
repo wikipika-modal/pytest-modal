@@ -9,10 +9,12 @@ You need Python 3.10 or later, a project whose tests run with `pytest`, and a
 [Modal account](https://modal.com/signup).
 
 ```
-pip install pytest-modal    # into the environment you run pytest from
+pip install git+https://github.com/wikipika-modal/pytest-modal   # into the environment you run pytest from
 modal setup                 # once: opens a browser and stores a token on this machine
 pytest --modal
 ```
+
+Once the package is on PyPI the first line becomes `pip install pytest-modal`.
 
 The first run builds an image holding the packages of that environment, then starts the sandboxes and
 reports each test as it finishes. For a project of 20 one-second tests in four files:
@@ -75,8 +77,8 @@ summary behave as in a plain run.
 - **A sandbox or image named by id** (`--modal-from=sb-...` or `im-...`): the controller runs somewhere
   else, snapshots that sandbox (or takes that image) and starts the shards from it, in the directory given
   by `--modal-workdir`. Collection is remote, the sandbox needs pytest and neither this plugin nor a Modal
-  token, and the controller needs none of the project: `pip install pytest-modal` and the same pytest
-  version are enough.
+  token, and the controller needs none of the project: this plugin and the same pytest version are
+  enough.
 
 `--modal-from=upload|disk|ID` overrides the choice.
 
