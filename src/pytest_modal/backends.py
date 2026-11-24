@@ -21,7 +21,8 @@ from ._common import BOOT, BYE
 
 PACKAGE = Path(__file__).parent
 REMOTE_LIB = "/opt/pytest-modal"
-IGNORE = [".git", ".venv", "**/__pycache__", "**/*.pyc", "**/node_modules"]
+# The weights are left out because every run rewrites them and no shard reads them.
+IGNORE = [".git", ".venv", "**/__pycache__", "**/*.pyc", "**/node_modules", "**/.pytest_cache/v/modal"]
 SITE = "/usr/local/lib/python{}/site-packages"
 NOT_MIRRORED = {"pytest-modal", "pip"}
 STORE = "pytest-modal"

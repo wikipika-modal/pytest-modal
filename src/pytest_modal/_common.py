@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import configparser
+import re
+from pathlib import Path
 
 MARK = "@@pytest-modal@@ "
 BYE = MARK + '{"kind": "bye"}'
@@ -16,6 +19,22 @@ def source(value: str) -> str:
 def elsewhere(source: str) -> bool:
     """Whether the project is held by a sandbox or image this process names and has no files of."""
     return source.startswith(("sb-", "im-"))
+
+
+def project(root: Path) -> str:
+    """A name for the project at `root` that its other checkouts share and other projects do not: where its
+    repository was cloned from, without the scheme and any credentials, then the path to `root` inside it.
+    A directory outside a repository has only its own name."""
+    for folder in (root, *root.parents):
+        settings = configparser.ConfigParser(strict=False, interpolation=None)
+        try:
+            settings.read(folder / ".git" / "config")
+            url = settings['remote "origin"']["url"]
+        except (KeyError, OSError, configparser.Error):
+            continue
+        origin = re.sub(r"^\w+://([^@/]*@)?|^[^@/:]+@|(\.git)?/*$", "", url).replace(":", "/")
+        return "/".join([origin, *root.relative_to(folder).parts])
+    return root.name
 
 
 def add_options(parser) -> None:
@@ -63,6 +82,11 @@ def add_options(parser) -> None:
         default=[],
     )
     parser.addini("modal_python", "interpreter the shards run (default: python, or this one with a disk snapshot)")
+    parser.addini(
+        "modal_project",
+        "name the weights are kept under on Modal (default: where the repository was cloned from, else the "
+        "root directory's name)",
+    )
     parser.addini("modal_timeout", "seconds a sandbox may live", default="3600")
     parser.addini("modal_start_timeout", "seconds a shard may take to start before it is replaced", default="300")
 

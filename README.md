@@ -104,8 +104,11 @@ tests (a sandbox and an interpreter to start, files to collect), up to `--modal-
 to `--modal-shards` is used as given, however large; shards start 128 at a time, the heaviest first, and
 the summary line says how long the last one waited. Weights are the wall time each test cost its shard in
 earlier runs; a test never seen weighs the median. They are kept in `.pytest_cache` and, for machines that
-keep no cache between runs, in a Modal Dict named `pytest-modal` in the environment the run uses, under the
-name of the project's root directory.
+keep no cache between runs, in a Modal Dict named `pytest-modal` in the environment the run uses. The entry
+is named after where the repository was cloned from (`github.com/you/project`, without credentials), so
+checkouts on different machines share it; outside a repository, after the root directory, and
+`modal_project` names it otherwise. A run of the whole suite replaces what was kept; a run of part of it
+adds to it.
 
 ### What a run leaves on Modal
 
@@ -141,6 +144,7 @@ Ini values:
 | --- | --- |
 | `modal_isolate` | Each line: patterns for test files that run together in a sandbox of their own |
 | `modal_python` | Interpreter the shards run |
+| `modal_project` | Name the weights are kept under on Modal |
 | `modal_conf` | File with the hooks below (`modal_conf.py`) |
 | `modal_timeout` | Seconds a sandbox may live (3600) |
 | `modal_start_timeout` | Seconds a shard may take to start before it is replaced (300); see below |

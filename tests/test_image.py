@@ -1,8 +1,10 @@
 import json
+from pathlib import Path
 
 import pytest
+from modal.file_pattern_matcher import FilePatternMatcher
 
-from pytest_modal.backends import environment
+from pytest_modal.backends import IGNORE, environment
 
 
 def test_the_packages_of_this_environment_are_pinned():
@@ -33,3 +35,9 @@ def test_a_package_installed_from_a_path_is_carried_as_its_files(tmp_path):
         tmp_path / "thing-1.0.dist-info/METADATA": "thing-1.0.dist-info/METADATA",
     }
     assert sources == [source]
+
+
+def test_the_kept_weights_stay_off_the_upload():
+    ignored = FilePatternMatcher(*IGNORE)
+    assert ignored(Path(".pytest_cache/v/modal/durations"))
+    assert not ignored(Path(".pytest_cache/v/cache/lastfailed"))

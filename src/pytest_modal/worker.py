@@ -10,7 +10,7 @@ import time
 
 import pytest
 
-from ._common import MARK, add_hooks, add_options, group_mark
+from ._common import MARK, add_hooks, add_options, group_mark, project
 
 # Taken at import, before pytest's capture replaces the process's stdin and stdout.
 _stdin, _stdout = os.dup(0), os.dup(1)
@@ -47,6 +47,7 @@ class Worker:
             executable=sys.executable,
             pytest=pytest.__version__,
             rootdir=str(config.rootpath),
+            project=project(config.rootpath),
         )
 
     def emit(self, kind, **data):
@@ -78,6 +79,12 @@ class Worker:
     @pytest.hookimpl(tryfirst=True)
     def pytest_runtestloop(self):
         return True if self.collecting else None
+
+    def pytest_deselected(self):
+        # Tells the controller that this run is not the whole suite. A shard that runs tests deselects all
+        # but its own, which says nothing.
+        if self.collecting:
+            self.emit("deselected")
 
     def pytest_collectreport(self, report):
         # A file skipped as a whole has no tests for a shard to run, so only collection can report it.

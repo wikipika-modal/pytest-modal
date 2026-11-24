@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from ._common import MARK, add_hooks, add_options, elsewhere, group_mark
+from ._common import MARK, add_hooks, add_options, elsewhere, group_mark, project
 from .backends import BACKENDS, Local, origin, sign_in, without_modal
 from .plan import Shard, plan
 
@@ -111,7 +111,12 @@ class Controller:
         self.remote = foreign or config.getoption("modal_collect") == "remote"
         # The shards' root directory; one that is not on this machine is learned from the shard that collects.
         self.root = None if foreign else config.rootpath
+        # The name the weights are kept under on Modal; like the root, the shard that collects may supply it.
+        self.project = config.getini("modal_project") or (None if foreign else project(config.rootpath))
         self.targets, options = split(config)
+        # Whether this run is known to be less than the whole suite: its weights then add to those kept
+        # and do not replace them.
+        self.partial = bool(self.targets)
         self.given = for_shards(options) + shlex.split(config.getoption("modal_args"))
         if config.pluginmanager.hasplugin("_cov"):
             self.given.append("--cov-report=")
@@ -134,6 +139,9 @@ class Controller:
         self.spent = {}
         self.wall = 0.0
         self.phases = {}
+
+    def pytest_deselected(self):
+        self.partial = True
 
     def pytest_report_header(self):
         return f"modal: {self.config.getoption('modal_backend')} backend"
@@ -186,8 +194,7 @@ class Controller:
         alone = frozenset(group for _, group in tests if group.startswith(ISOLATED))
         cache = getattr(config, "cache", None)
         # Weights live in two places: this machine's cache, and the backend's store for machines that keep none.
-        project = (self.root or config.rootpath).name
-        known = {**self.ready().weights(project), **(cache.get(DURATIONS, {}) if cache else {})}
+        known = {**self.ready().weights(self.project), **(cache.get(DURATIONS, {}) if cache else {})}
         count = None if config.getoption("modal_shards") == "auto" else int(config.getoption("modal_shards"))
         start = known.pop(START, 0.0)
         shards = plan(tests, count, known, most(config), alone, start)
@@ -210,10 +217,12 @@ class Controller:
                 signal.signal(signal.SIGTERM, previous)
             self.wall = time.monotonic() - started
             costs = sorted(lane.seconds - lane.spent for lane in self.lanes if lane.mode == "run" and lane.bye)
-            kept = {**known, **self.spent, START: costs[len(costs) // 2] if costs else start}
+            # A run of the whole suite knows every test there is, so what it kept of others is dropped.
+            whole = not self.partial and all(nodeid in self.spent for nodeid, _ in self.tests)
+            kept = {**({} if whole else known), **self.spent, START: costs[len(costs) // 2] if costs else start}
             if cache:
                 cache.set(DURATIONS, kept)
-            self.backend.keep(project, kept)
+            self.backend.keep(self.project, kept)
         return True
 
     def group(self, nodeid, marked):
@@ -338,12 +347,15 @@ class Controller:
                     f"{pytest.__version__}: install the same version in both"
                 )
             self.root = self.root or Path(event.pop("rootdir"))
+            self.project = self.project or event.pop("project")
             # pytest 8.0 formats this with %, which wants the tuple JSON turned into a list.
             lane.workerinfo.update(event, version_info=tuple(event["version_info"]))
         elif kind == "items":
             for nodeid, location, group in event["items"]:
                 self.tests.append((nodeid, group))
                 self.locations[nodeid] = tuple(location)
+        elif kind == "deselected":
+            self.partial = True
         elif kind == "missing":
             lane.missing = event["ids"]
         elif kind == "coverage":
