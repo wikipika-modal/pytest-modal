@@ -3,7 +3,7 @@ import pytest
 
 @pytest.hookspec(firstresult=True)
 def pytest_modal_image(config):
-    """Return the modal.Image the tests run in. The project directory is added on top of it."""
+    """Return the modal.Image the tests run in when the project is uploaded. The project is added on top."""
 
 
 @pytest.hookspec(firstresult=True)

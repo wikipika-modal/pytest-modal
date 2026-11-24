@@ -15,7 +15,10 @@ classifiers = ["Framework :: Pytest"]
 pytest_modal = "pytest_modal.plugin"
 
 [dependency-groups]
-dev = ["ruff"]
+dev = [
+    "pytest-cov>=7.1.0",
+    "ruff",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
