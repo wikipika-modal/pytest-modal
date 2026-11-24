@@ -1,9 +1,12 @@
 import os
+from pathlib import PurePosixPath
 
 import modal
 import pytest
 
 MODAL_CONFIG = os.path.expanduser("~/.modal.toml")
+# Where the tests that build a project inside a sandbox put it.
+RUNNER_PROJECT = PurePosixPath("/pytest-modal-live-project")
 
 
 def pytest_collection_modifyitems(items):
@@ -21,14 +24,24 @@ def modal_config(monkeypatch):
     monkeypatch.setenv("MODAL_CONFIG_PATH", os.environ.get("MODAL_CONFIG_PATH", MODAL_CONFIG))
 
 
+@pytest.fixture(autouse=True)
+def no_weights_left(request):
+    """A run keeps its weights on Modal under the name of its root directory; these tests' are removed."""
+    names = {RUNNER_PROJECT.name}
+    if "pytester" in request.fixturenames:
+        names.add(request.getfixturevalue("pytester").path.name)
+    yield
+    store = modal.Dict.from_name("pytest-modal", create_if_missing=True)
+    for name in names:
+        store.pop(name, None)
+
+
 @pytest.fixture
 def on_modal(pytester):
     def run(*args):
         return pytester.runpytest_subprocess("--modal", *args)
 
-    yield run
-    # The weights a run keeps on Modal, under the name of this test's directory.
-    modal.Dict.from_name("pytest-modal", create_if_missing=True).pop(pytester.path.name, None)
+    return run
 
 
 @pytest.fixture
