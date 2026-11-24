@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 
 MARK = "@@pytest-modal@@ "
+BYE = MARK + '{"kind": "bye"}'
 BOOT = "import sys; sys.path.insert(0, sys.argv.pop(1)); import pytest; sys.exit(pytest.main(sys.argv[1:]))"
 
 

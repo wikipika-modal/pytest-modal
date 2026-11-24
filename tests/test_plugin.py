@@ -3,6 +3,8 @@ import xml.etree.ElementTree as ET
 
 import pytest
 
+from pytest_modal._common import BYE, MARK
+
 
 @pytest.fixture
 def suite(pytester):
@@ -26,6 +28,10 @@ def suite(pytester):
         test_c="def test_only(): pass",
     )
     return pytester
+
+
+def test_the_goodbye_a_backend_waits_for_is_the_one_a_shard_sends():
+    assert BYE == MARK + json.dumps({"kind": "bye"})
 
 
 def test_outcomes_match_a_plain_run(suite, sharded):
