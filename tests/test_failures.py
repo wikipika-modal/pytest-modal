@@ -137,17 +137,40 @@ def test_replacing_shards_does_not_wait_for_each_to_stop():
     def fails():
         raise RuntimeError("already gone")
 
-    lanes = [SimpleNamespace(stop=stop, greeted=False, launched=0.0, tail=[]) for _ in range(8)]
-    lanes.append(SimpleNamespace(stop=fails, greeted=False, launched=0.0, tail=[]))
-    lanes.append(SimpleNamespace(stop=stop, greeted=True, launched=0.0, tail=[]))
+    lanes = [SimpleNamespace(stop=stop, greeted=False, launched=0.0, tail=[], stalled=0) for _ in range(8)]
+    lanes.append(SimpleNamespace(stop=fails, greeted=False, launched=0.0, tail=[], stalled=0))
+    lanes.append(SimpleNamespace(stop=stop, greeted=True, launched=0.0, tail=[], stalled=0, up=0.1))
     started = time.monotonic()
-    Controller.replace_slow_starters(SimpleNamespace(live=lanes, patience=1.0))
+    Controller.replace_slow_starters(SimpleNamespace(live=lanes, lanes=lanes, patience=1.0))
     assert time.monotonic() - started < 0.4
     assert [lane.stop for lane in lanes[:9]] == [None] * 9 and lanes[9].stop is stop
     deadline = time.monotonic() + 10
     while len(stopped) < 8 and time.monotonic() < deadline:
         time.sleep(0.05)
     assert len(stopped) == 8
+
+
+def test_a_first_start_far_behind_the_others_is_replaced_before_the_timeout():
+    now = time.monotonic()
+
+    def starting(seconds, stalled=0):
+        return SimpleNamespace(stop=lambda: None, greeted=False, launched=now - seconds, tail=[], stalled=stalled)
+
+    def slow_starters(up, patience=300.0):
+        others = [SimpleNamespace(stop=None, greeted=True, up=up, stalled=0) for _ in range(9)]
+        lanes = {"late": starting(20), "later": starting(40), "second try": starting(40, stalled=1)}
+        controller = SimpleNamespace(live=list(lanes.values()), lanes=[*others, *lanes.values()], patience=patience)
+        Controller.replace_slow_starters(controller)
+        return [name for name, lane in lanes.items() if lane.stop is None]
+
+    assert slow_starters(up=1.5) == ["late", "later"]
+    assert slow_starters(up=3.0) == ["later"]
+    assert slow_starters(up=30.0) == []
+    assert slow_starters(up=1.5, patience=10.0) == ["late", "later", "second try"]
+    few = [SimpleNamespace(stop=None, greeted=True, up=1.5, stalled=0) for _ in range(3)]
+    late = starting(40)
+    Controller.replace_slow_starters(SimpleNamespace(live=[late], lanes=[*few, late], patience=300.0))
+    assert late.stop is not None
 
 
 def test_a_shard_that_fails_after_its_sandbox_started_stops_the_sandbox():

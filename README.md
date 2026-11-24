@@ -106,7 +106,7 @@ Ini values:
 | `modal_python` | Interpreter the shards run |
 | `modal_conf` | File with the hooks below (`modal_conf.py`) |
 | `modal_timeout` | Seconds a sandbox may live (3600) |
-| `modal_start_timeout` | Seconds a shard may take to start before it is replaced (300) |
+| `modal_start_timeout` | Seconds a shard may take to start before it is replaced (300); see below |
 
 `modal_isolate` is for order dependencies a suite has and does not declare: files that pass only in a
 process that also loaded another file go on one line, and a file that fails after certain others goes on a
@@ -141,7 +141,7 @@ def pytest_modal_sandbox(config):  # keyword arguments for modal.Sandbox.create
 | --- | --- |
 | A sandbox dies while running a test | That test fails with the sandbox's last output; the rest of the shard runs in a new sandbox |
 | A sandbox dies or fails to start before running anything | The shard is retried, `--modal-retries` times |
-| A sandbox does not start within `modal_start_timeout` | It is replaced |
+| A sandbox does not start within `modal_start_timeout`, or its first start takes ten times as long as most of the run's and more than 15 s | It is replaced |
 | A shard does not collect a test the controller listed | That test is an error |
 | The controller is interrupted or terminated | It stops its sandboxes |
 | The controller is killed outright | Modal stops the run's app and its sandboxes when the heartbeat lapses (about 3 minutes) |

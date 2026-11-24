@@ -28,6 +28,8 @@ START = "shard start"
 # The most shards auto asks for. Up to 256 sandboxes the controller starts them as fast as it does 64; local
 # shards are processes on this machine.
 MOST = {"modal": 256, "local": 64}
+# Seconds before which no shard is replaced for being slower to start than the others.
+EARLIEST = 15
 ISOLATED = "isolate:"
 OUTPUT = ("Captured stdout", "Captured stderr")
 CONTROLLER_ONLY = ("--junitxml", "--junit-xml", "--basetemp", "--cov-report", "--cov-fail-under")
@@ -303,9 +305,14 @@ class Controller:
 
     def replace_slow_starters(self):
         now = time.monotonic()
+        # Among hundreds of sandboxes one may take a minute to answer, and the run would wait for it: a first
+        # start that takes ten times as long as most is given up for another.
+        up = sorted(lane.up for lane in self.lanes if lane.greeted)
+        early = max(10 * up[len(up) // 2], EARLIEST) if len(up) >= 8 else self.patience
         for lane in self.live:
-            if lane.stop and not lane.greeted and now - lane.launched > self.patience:
-                lane.tail.append(f"no start within {self.patience:.0f}s")
+            patience = self.patience if lane.stalled else min(self.patience, early)
+            if lane.stop and not lane.greeted and now - lane.launched > patience:
+                lane.tail.append(f"no start within {patience:.0f}s")
                 stop, lane.stop = lane.stop, None
                 # Not from this thread: stopping a sandbox is a call to Modal, and while this thread waits
                 # for one no shard's reports are read.
