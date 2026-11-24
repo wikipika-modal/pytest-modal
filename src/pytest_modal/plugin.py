@@ -479,6 +479,9 @@ def pump(backend, lane, args, events):
         outcome = backend.run(lane, args, lambda line: events.put((lane, line)))
     except Exception as error:  # noqa: BLE001
         outcome = error
+        # What the shard started is of no more use, and would hold its place on Modal until the run ends.
+        if lane.stop:
+            quietly(lane.stop)
     events.put((lane, outcome))
 
 

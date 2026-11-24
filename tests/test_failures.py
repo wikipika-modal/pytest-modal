@@ -1,4 +1,5 @@
 import os
+import queue
 import signal
 import subprocess
 import sys
@@ -7,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from pytest_modal.plugin import Controller
+from pytest_modal.plugin import Controller, pump
 
 COUNT_STARTS = """
 import os
@@ -147,6 +148,20 @@ def test_replacing_shards_does_not_wait_for_each_to_stop():
     while len(stopped) < 8 and time.monotonic() < deadline:
         time.sleep(0.05)
     assert len(stopped) == 8
+
+
+def test_a_shard_that_fails_after_its_sandbox_started_stops_the_sandbox():
+    stopped, events = [], queue.Queue()
+
+    class Backend:
+        def run(self, lane, args, emit):
+            lane.stop = lambda: stopped.append(lane)
+            raise ConnectionError("lost the sandbox's output")
+
+    lane = SimpleNamespace(stop=None)
+    pump(Backend(), lane, [], events)
+    assert stopped == [lane]
+    assert isinstance(events.get_nowait()[1], ConnectionError)
 
 
 ROOM_FOR = """
