@@ -17,7 +17,7 @@ The first public alpha.
   splits inside files; `modal_isolate` and `xdist_group` keep tests together.
 - `--modal-collect=remote` lists the tests where they run, so the controller imports no test code.
 - The controller signs in before it imports the project and keeps the token out of the shards.
-- A sandbox that dies fails the test it was running and the rest of its shard runs elsewhere; a controller
-  that dies leaves nothing running.
+- A sandbox that dies fails the test it was running and the rest of its shard runs elsewhere; Modal stops
+  the sandboxes of a controller that died.
 - `--modal-backend=local` runs the shards as local subprocesses, with no Modal account.
 - Requires Python 3.10 to 3.15, pytest 8.0 or later and modal 1.6.2 or later.
