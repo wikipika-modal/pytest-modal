@@ -114,6 +114,9 @@ class Local:
             emit(line)
         return process.wait()
 
+    def full(self, outcome) -> bool:
+        return False
+
     def weights(self, project) -> dict:
         return {}
 
@@ -161,6 +164,11 @@ class Modal:
         for image in self.snapshots:
             with contextlib.suppress(self.modal.exception.Error):
                 self.modal.experimental.image_delete(image)
+
+    def full(self, outcome) -> bool:
+        """Whether a shard ended this way because Modal has no room for another sandbox: a limit on how many
+        run at once, or on how fast they are created, which the client has by then waited on and retried."""
+        return isinstance(outcome, self.modal.exception.ResourceExhaustedError)
 
     def weights(self, project) -> dict:
         try:

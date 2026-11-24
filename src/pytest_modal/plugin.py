@@ -119,6 +119,7 @@ class Controller:
         self.lanes = []
         self.live = set()
         self.restarts = 0
+        self.waiting = []
         self.shards = 0
         self.tests = []
         self.locations = {}
@@ -261,7 +262,13 @@ class Controller:
 
     def drain(self, session=None):
         check = 0.0
-        while self.live:
+        while self.live or self.waiting:
+            if not self.live:
+                # No sandbox of this run is left to make room, so these were starts that failed.
+                waiting, self.waiting = self.waiting, []
+                for lane in waiting:
+                    self.finish(lane, waited=True)
+                continue
             # By the clock: with many shards reporting there may be no quiet second to wait for.
             if time.monotonic() >= check:
                 self.replace_slow_starters()
@@ -278,6 +285,9 @@ class Controller:
                 lane.outcome = event
                 if lane.mode == "run":
                     self.finish(lane)
+                    if self.waiting and lane.shard.where:
+                        waiter = self.waiting.pop(0)
+                        self.again(waiter, waiter.stalled)
             if session is not None and session.shouldfail:
                 raise session.Failed(session.shouldfail)
             if session is not None and session.shouldstop:
@@ -369,7 +379,7 @@ class Controller:
                 report.sections = [section for section in report.sections if section not in written]
             hook.pytest_runtest_logreport(report=report)
 
-    def finish(self, lane):
+    def finish(self, lane, waited=False):
         for nodeid in lane.missing:
             if nodeid in lane.pending:
                 del lane.pending[nodeid]
@@ -381,13 +391,23 @@ class Controller:
         left = list(lane.pending)
         if not left:
             return
+        if not waited and self.live and self.backend.full(lane.outcome):
+            # Not a start that failed: Modal has no room, and takes the shard when a sandbox of this run ends.
+            # Trying again at once would spend every retry in the same second.
+            if not self.waiting:
+                self.say(f"modal: no room for another sandbox ({lane.outcome}); shards wait for others to finish")
+            self.waiting.append(lane)
+            return
         stalled = 0 if crashed or lane.finished else lane.stalled + 1
         if lane.bye or stalled > self.retries:
             for nodeid in left:
                 self.fail(lane, nodeid, "setup", "without running this test")
             return
+        self.again(lane, stalled)
+
+    def again(self, lane, stalled):
         self.restarts += 1
-        self.launch(Shard(lane.shard.index, left), stalled=stalled)
+        self.launch(Shard(lane.shard.index, list(lane.pending), lane.shard.weight), stalled=stalled)
 
     def fail(self, lane, nodeid, when, what):
         text = "\n".join([f"{lane.ended()} {what}", *lane.tail])

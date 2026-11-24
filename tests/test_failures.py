@@ -149,6 +149,47 @@ def test_replacing_shards_does_not_wait_for_each_to_stop():
     assert len(stopped) == 8
 
 
+ROOM_FOR = """
+import threading
+from pytest_modal import backends
+
+class NoRoom(Exception):
+    pass
+
+room = threading.Semaphore({room})
+run = backends.Local.run
+
+def limited(self, lane, args, emit):
+    open("attempts", "a").write("x")
+    if not room.acquire(blocking=False):
+        raise NoRoom("Concurrent sandbox limit ({room}) exceeded")
+    try:
+        return run(self, lane, args, emit)
+    finally:
+        room.release()
+
+backends.Local.run = limited
+backends.Local.full = lambda self, outcome: isinstance(outcome, NoRoom)
+"""
+
+
+def test_shards_there_is_no_room_for_wait_for_others_to_finish(pytester, sharded):
+    """Only the controller loads modal_conf.py, where the local backend is given room for two shards."""
+    pytester.makepyfile(modal_conf=ROOM_FOR.format(room=2), **{f"test_{n}": "def test_one(): pass" for n in range(6)})
+    result = sharded("--modal-shards=6", "--modal-retries=0")
+    result.assert_outcomes(passed=6)
+    result.stdout.fnmatch_lines(["modal: no room for another sandbox (Concurrent sandbox limit (2) exceeded)*"])
+    assert result.stdout.str().count("no room for another sandbox") == 1
+
+
+def test_with_no_room_and_nothing_to_wait_for_shards_fail_after_their_retries(pytester, sharded):
+    pytester.makepyfile(modal_conf=ROOM_FOR.format(room=0), **{f"test_{n}": "def test_one(): pass" for n in range(4)})
+    result = sharded("--modal-shards=4", "--modal-retries=1")
+    result.assert_outcomes(errors=4)
+    result.stdout.fnmatch_lines(["*Concurrent sandbox limit (0) exceeded*without running this test*"])
+    assert len((pytester.path / "attempts").read_text()) <= 4 * 2
+
+
 def test_sigterm_stops_the_shards(pytester):
     pytester.makepyfile(
         """
