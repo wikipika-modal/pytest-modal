@@ -277,7 +277,8 @@ class Controller:
                     f"the shards run pytest {theirs} ({event['executable']}) and this process runs pytest "
                     f"{pytest.__version__}: install the same version in both"
                 )
-            lane.workerinfo.update(event)
+            # pytest 8.0 formats this with %, which wants the tuple JSON turned into a list.
+            lane.workerinfo.update(event, version_info=tuple(event["version_info"]))
         elif kind == "items":
             for nodeid, location, group in event["items"]:
                 self.tests.append((nodeid, group))
