@@ -1,0 +1,44 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+      - run: uv run ruff check
+      - run: uv run ruff format --check
+
+  test:
+    name: python ${{ matrix.python }}, pytest${{ matrix.pytest || ' latest' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13", "3.14", "3.15"]
+        pytest: [""]
+        include:
+          - python: "3.10"
+            pytest: "==8.0.*"
+          - python: "3.12"
+            pytest: "==8.*"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+      - run: uv venv --python ${{ matrix.python }}
+      - run: uv pip install -e . pytest-cov "pytest${{ matrix.pytest }}"
+      # Subprocesses stand in for sandboxes (--modal-backend=local), so this needs no Modal account and no
+      # secret. The tests under tests/live create sandboxes and are skipped here.
+      - run: .venv/bin/python -m pytest

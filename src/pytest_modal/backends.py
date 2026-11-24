@@ -16,7 +16,7 @@ from urllib.parse import unquote, urlparse
 
 import pytest
 
-from ._common import BOOT
+from ._common import BOOT, BYE
 
 PACKAGE = Path(__file__).parent
 REMOTE_LIB = "/opt/pytest-modal"
@@ -209,9 +209,14 @@ class Modal:
         process.stdin.write("\n".join(lane.shard.ids))
         process.stdin.write_eof()
         process.stdin.drain()
+        code = None
         for line in process.stdout:
             emit(line)
-        code = process.wait()
+            # After its goodbye a shard only has an interpreter to shut down, which nothing waits for.
+            if BYE in line:
+                code = 0
+                break
+        code = process.wait() if code is None else code
         box.terminate()
         return code
 
