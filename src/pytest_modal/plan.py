@@ -17,11 +17,18 @@ class Shard:
         return sorted({nodeid.split("::")[0] for nodeid in self.ids})
 
 
-def plan(tests: list[tuple[str, str]], shards: int | None, durations: dict[str, float], limit: int) -> list[Shard]:
+def plan(
+    tests: list[tuple[str, str]],
+    shards: int | None,
+    durations: dict[str, float],
+    limit: int,
+    alone: frozenset[str] = frozenset(),
+) -> list[Shard]:
     """Split (nodeid, group) pairs, given in collection order, into shards of similar expected time.
 
-    A group never spans two shards. With no shard count the plan stops adding shards once the heaviest
-    group would be the longest one, since more sandboxes could not finish sooner.
+    A group never spans two shards, and each group named in `alone` has a shard to itself. No number of
+    sandboxes finishes before the heaviest group does. With no shard count the plan fills shards to half
+    that group's weight: a shard also pays to start, and tests cost more in a process that ran others.
     """
     default = median(durations.values()) if durations else 1.0
     members: dict[str, list[int]] = {}
@@ -29,12 +36,20 @@ def plan(tests: list[tuple[str, str]], shards: int | None, durations: dict[str, 
     for position, (nodeid, group) in enumerate(tests):
         members.setdefault(group, []).append(position)
         weights[group] = weights.get(group, 0.0) + durations.get(nodeid, default)
+    apart = [group for group in members if group in alone]
+    packed = sorted((group for group in members if group not in alone), key=lambda name: -weights[name])
     if shards is None:
-        shards = math.ceil(sum(weights.values()) / max(weights.values()))
-    bins = [Shard(index) for index in range(max(1, min(shards, len(members), limit)))]
+        wanted = math.ceil(2 * sum(weights[group] for group in packed) / weights[packed[0]]) if packed else 0
+    else:
+        wanted = shards - len(apart)
+    shared = min(max(wanted, 1), len(packed), max(limit - len(apart), 1))
+    bins = [Shard(index) for index in range(shared + len(apart))]
     positions: list[list[int]] = [[] for _ in bins]
-    for group in sorted(members, key=lambda name: -weights[name]):
-        lightest = min(bins, key=lambda shard: shard.weight)
+    for shard, group in zip(bins[shared:], apart):
+        shard.weight = weights[group]
+        positions[shard.index] = members[group]
+    for group in packed:
+        lightest = min(bins[:shared], key=lambda shard: shard.weight)
         lightest.weight += weights[group]
         positions[lightest.index] += members[group]
     for shard, held in zip(bins, positions):

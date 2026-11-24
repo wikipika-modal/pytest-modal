@@ -20,6 +20,16 @@ cat > test_b.py <<'EOF'
 import os
 def test_runs_in_another_sandbox():
     assert os.environ["MODAL_SANDBOX_ID"] != open("/work/runner").read().strip()
+def test_has_no_modal_credentials():
+    assert "MODAL_TOKEN_SECRET" not in os.environ
+EOF
+"""
+# Imported only by the project's interpreter: at collection in the runner, then in a shard.
+LISTED_IN_THE_RUNNER = """
+cat > /work/test_c.py <<'EOF'
+import os
+assert "MODAL_TOKEN_SECRET" not in os.environ
+def test_listed_without_modal_credentials(): pass
 EOF
 """
 
@@ -51,6 +61,14 @@ def test_shards_start_from_the_runner_disk(runtime):
         )  # fmt: skip
         output = run.stdout.read() + run.stderr.read()
         assert run.wait() == 0, output
-        assert "2 passed" in output and "modal: 2 shards" in output, output
+        assert "3 passed" in output and "modal: 2 shards" in output, output
+        assert runner.exec("sh", "-c", LISTED_IN_THE_RUNNER).wait() == 0
+        run = runner.exec(
+            "python", "-m", "pytest", "--modal", "--modal-collect=remote", "--modal-shards=2", workdir="/work",
+            secrets=[credentials], env=environment,
+        )  # fmt: skip
+        output = run.stdout.read() + run.stderr.read()
+        assert run.wait() == 0, output
+        assert "collected 4 items in pid" in output and "4 passed" in output, output
     finally:
         runner.terminate()

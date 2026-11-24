@@ -4,6 +4,7 @@ import base64
 import contextlib
 import importlib.util
 import json
+import os
 import queue
 import shlex
 import signal
@@ -12,14 +13,16 @@ import threading
 import time
 import warnings
 from collections import deque
+from fnmatch import fnmatch
 
 import pytest
 
 from ._common import MARK, add_hooks, add_options, group_mark
-from .backends import BACKENDS
+from .backends import BACKENDS, Local, from_disk, without_modal
 from .plan import Shard, plan
 
 DURATIONS = "modal/durations"
+ISOLATED = "isolate:"
 
 
 def pytest_addoption(parser):
@@ -92,7 +95,7 @@ class Controller:
         self.given = [arg for arg in given if arg not in named] + shlex.split(config.getoption("modal_args"))
         self.retries = config.getoption("modal_retries")
         self.patience = float(config.getini("modal_start_timeout"))
-        self.backend = None
+        self.backend = self.collector = self.starting = self.broken = None
         self.events = queue.Queue()
         self.lanes = []
         self.live = set()
@@ -102,6 +105,7 @@ class Controller:
         self.locations = {}
         self.spent = {}
         self.wall = 0.0
+        self.phases = {}
 
     def pytest_report_header(self):
         return f"modal: {self.config.getoption('modal_backend')} backend"
@@ -115,13 +119,20 @@ class Controller:
     def pytest_collection(self, session):
         if not self.remote:
             return None
+        config = self.config
+        # The interpreter that runs the tests is on this disk when the shards start from a snapshot of it:
+        # it lists the tests here while the snapshot is taken.
+        if config.getoption("modal_backend") == "modal" and from_disk(config):
+            self.collector = Local(config, without_modal(os.environ))
         with calm():
+            self.start()
             for _ in range(self.retries + 1):
                 self.tests, self.locations = [], {}
                 lane = self.launch(Shard(0), "collect")
                 self.drain()
                 if lane.bye:
                     break
+        self.phases["collect"] = lane.seconds
         if not lane.bye:
             raise pytest.UsageError("\n".join([f"collection: {lane.ended()}", *lane.tail]))
         session.items = []
@@ -143,12 +154,12 @@ class Controller:
             return True
         if not self.tests:
             return True
-        by_file = config.getoption("modal_group_by") == "file"
-        tests = [(nodeid, group or (nodeid.split("::")[0] if by_file else nodeid)) for nodeid, group in self.tests]
+        tests = [(nodeid, self.group(nodeid, group)) for nodeid, group in self.tests]
+        alone = frozenset(group for _, group in tests if group.startswith(ISOLATED))
         cache = getattr(config, "cache", None)
         known = cache.get(DURATIONS, {}) if cache else {}
-        count = config.getoption("modal_shards")
-        shards = plan(tests, None if count == "auto" else int(count), known, config.getoption("modal_max_shards"))
+        count = None if config.getoption("modal_shards") == "auto" else int(config.getoption("modal_shards"))
+        shards = plan(tests, count, known, config.getoption("modal_max_shards"), alone)
         self.shards = len(shards)
         terminal = config.pluginmanager.get_plugin("terminalreporter")
         if terminal:
@@ -169,24 +180,50 @@ class Controller:
                 cache.set(DURATIONS, {**known, **self.spent})
         return True
 
+    def group(self, nodeid, marked):
+        path = nodeid.split("::")[0]
+        for number, line in enumerate(self.config.getini("modal_isolate")):
+            if any(fnmatch(path, pattern) for pattern in line.split()):
+                return f"{ISOLATED}{number}"
+        return marked or (path if self.config.getoption("modal_group_by") == "file" else nodeid)
+
     @pytest.hookimpl(trylast=True)
     def pytest_sessionfinish(self):
-        if self.backend:
-            self.backend.close()
+        if self.starting:
+            self.starting.join()
+        for runner in (self.collector, self.backend):
+            if runner:
+                runner.close()
+
+    def start(self):
+        if self.starting is None:
+            self.starting = threading.Thread(target=self.create, daemon=True)
+            self.starting.start()
+
+    def create(self):
+        started = time.monotonic()
+        try:
+            self.backend = BACKENDS[self.config.getoption("modal_backend")](self.config)
+        except Exception as error:  # noqa: BLE001
+            self.broken = error
+        self.phases["start"] = time.monotonic() - started
+
+    def ready(self):
+        self.start()
+        self.starting.join()
+        if self.broken:
+            raise pytest.UsageError(f"pytest-modal could not start: {self.broken}") from self.broken
+        return self.backend
 
     def launch(self, shard, mode="run", stalled=0):
-        if self.backend is None:
-            try:
-                self.backend = BACKENDS[self.config.getoption("modal_backend")](self.config)
-            except Exception as error:
-                raise pytest.UsageError(f"pytest-modal could not start: {error}") from error
+        runner = self.collector if mode == "collect" and self.collector else self.ready()
         lane = Lane(shard, mode, self.shards, stalled)
         root = self.config.rootpath
         paths = self.targets if mode == "collect" else [str(root / path) for path in shard.paths]
         args = [*self.given, f"--modal-worker={mode}", "-p", "pytest_modal.worker", "--rootdir", str(root), *paths]
         self.lanes.append(lane)
         self.live.add(lane)
-        threading.Thread(target=pump, args=(self.backend, lane, args, self.events), daemon=True).start()
+        threading.Thread(target=pump, args=(runner, lane, args, self.events), daemon=True).start()
         return lane
 
     def drain(self, session=None):
@@ -238,23 +275,41 @@ class Controller:
             self.coverage(lane, event["data"])
         elif kind == "bye":
             lane.bye = True
+        elif kind == "warning":
+            module, name = event.pop("category")
+            # Only a category this process already has is looked up; it imports nothing of the project's.
+            category = getattr(sys.modules.get(module), name, None)
+            if not (isinstance(category, type) and issubclass(category, Warning)):
+                category = type(name, (Warning,), {"__module__": module})
+            recorded = warnings.WarningMessage(
+                event["message"], category, event["filename"], event["lineno"], line=event["line"]
+            )
+            where = tuple(event["location"]) if event["location"] else None
+            hook.pytest_warning_recorded.call_historic(
+                kwargs={
+                    "warning_message": recorded,
+                    "when": event["when"],
+                    "nodeid": event["nodeid"],
+                    "location": where,
+                }
+            )
         elif kind == "logstart":
             lane.current = event["nodeid"]
             hook.pytest_runtest_logstart(nodeid=event["nodeid"], location=tuple(event["location"]))
         elif kind == "logfinish":
             lane.current = None
+            self.spent[event["nodeid"]] = event["took"]
             hook.pytest_runtest_logfinish(nodeid=event["nodeid"], location=tuple(event["location"]))
         else:
             report = hook.pytest_report_from_serializable(config=self.config, data=event["report"])
             report.node = lane
+            # JSON turned these tuples into lists; junitxml asserts on the skip tuple.
+            if isinstance(report.longrepr, list):
+                report.longrepr = tuple(report.longrepr)
             if isinstance(report, pytest.CollectReport):
                 hook.pytest_collectreport(report=report)
                 return
-            # JSON turned these tuples into lists; junitxml asserts on the skip tuple.
             report.location = tuple(report.location)
-            if isinstance(report.longrepr, list):
-                report.longrepr = tuple(report.longrepr)
-            self.spent[report.nodeid] = self.spent.get(report.nodeid, 0.0) + report.duration
             if report.when == "teardown" and report.nodeid in lane.pending:
                 del lane.pending[report.nodeid]
                 lane.finished += 1
@@ -307,9 +362,10 @@ class Controller:
                     f"{lane.gateway.id} {shard.where} {len(shard.ids)} tests {lane.seconds:.1f}s"
                 )
         restarts = f", {self.restarts} restarts" if self.restarts else ""
+        phases = "".join(f", {name} {seconds:.1f}s" for name, seconds in self.phases.items())
         tests = sum(self.spent.values())
         terminalreporter.write_line(
-            f"modal: {self.shards} shards, {self.wall:.1f}s wall, {tests:.1f}s of tests{restarts}"
+            f"modal: {self.shards} shards, {self.wall:.1f}s wall, {tests:.1f}s of tests{phases}{restarts}"
         )
 
 

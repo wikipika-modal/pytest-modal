@@ -53,6 +53,17 @@ def test_tests_sharing_an_xdist_group_stay_together(pytester, sharded):
     assert len(set((pytester.path / "shards").read_text())) == 1
 
 
+def test_isolated_files_run_together_in_a_sandbox_of_their_own(pytester, sharded):
+    pytester.makeini("[pytest]\nmodal_isolate =\n    test_a.py test_d.py\n    sub/test_*.py")
+    body = "import os\ndef test_it(): open('shard-' + os.environ['PYTEST_MODAL_SHARD'], 'a').write('{0}')"
+    for name in "abcde":
+        pytester.makepyfile(**{f"test_{name}": body.format(name)})
+    pytester.mkdir("sub").joinpath("test_f.py").write_text(body.format("f"))
+    sharded("--modal-shards=2").assert_outcomes(passed=6)
+    ran = sorted(path.read_text() for path in pytester.path.iterdir() if path.name.startswith("shard-"))
+    assert ran == ["ad", "bce", "f"]
+
+
 def test_a_failing_session_teardown_is_reported(pytester, sharded):
     pytester.makeconftest(
         """

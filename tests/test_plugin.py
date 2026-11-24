@@ -1,3 +1,4 @@
+import json
 import xml.etree.ElementTree as ET
 
 import pytest
@@ -66,6 +67,21 @@ def test_durations_are_kept_for_the_next_plan(pytester, sharded):
     sharded()
     result = pytester.runpytest_subprocess("--cache-show", "modal/*")
     result.stdout.fnmatch_lines(["*modal/durations*", "*test_one*"])
+
+
+def test_a_kept_duration_counts_time_spent_around_the_test(pytester, sharded):
+    pytester.makeconftest(
+        """
+        import time
+        def pytest_runtest_logreport(report):
+            if report.when == "call":
+                time.sleep(0.3)
+        """
+    )
+    pytester.makepyfile("def test_one(): pass")
+    sharded().assert_outcomes(passed=1)
+    kept = json.loads((pytester.path / ".pytest_cache/v/modal/durations").read_text())
+    assert kept["test_a_kept_duration_counts_time_spent_around_the_test.py::test_one"] >= 0.3
 
 
 def test_a_backend_that_cannot_start_is_a_usage_error(pytester, monkeypatch):

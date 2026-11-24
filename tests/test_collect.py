@@ -47,6 +47,39 @@ def test_remote_collection_errors_stop_the_run(pytester, sharded):
     assert result.ret != 0
 
 
+def test_a_file_skipped_as_a_whole_is_reported_once(pytester, sharded):
+    pytester.makepyfile(
+        test_a="import pytest\npytest.importorskip('a_module_that_does_not_exist')\ndef test_one(): pass",
+        test_b="def test_two(): pass",
+    )
+    plain = pytester.runpytest_subprocess().parseoutcomes()
+    assert plain == {"passed": 1, "skipped": 1}
+    assert sharded().parseoutcomes() == plain
+    result = sharded("--modal-collect=remote", "-rs")
+    assert result.parseoutcomes() == plain
+    result.stdout.fnmatch_lines(["SKIPPED*test_a.py*a_module_that_does_not_exist*"])
+
+
+def test_warnings_come_back_as_in_a_plain_run(pytester, sharded):
+    pytester.makepyfile(
+        """
+        import warnings
+        warnings.warn("at import")
+        class Odd(UserWarning): pass
+        def test_one(): warnings.warn("in a test")
+        def test_two(): warnings.warn(Odd("of the project's own kind"))
+        """
+    )
+    plain = pytester.runpytest_subprocess().parseoutcomes()
+    assert plain == {"passed": 2, "warnings": 3}
+    for collect in ("local", "remote"):
+        result = sharded(f"--modal-collect={collect}", "--modal-shards=2", "--modal-group-by=test")
+        assert result.parseoutcomes() == plain
+        result.stdout.fnmatch_lines(["*UserWarning: at import*"])
+        result.stdout.fnmatch_lines(["*UserWarning: in a test*"])
+        result.stdout.fnmatch_lines(["*Odd: of the project's own kind*"])
+
+
 def test_last_failed_works_with_remote_collection(pytester, sharded):
     project(pytester)
     sharded("--modal-collect=remote")

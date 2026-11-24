@@ -24,17 +24,32 @@ def library() -> str:
     return folder
 
 
+def from_disk(config) -> bool:
+    """Whether shards start from a snapshot of this machine's disk, which only a Modal sandbox can take."""
+    source = config.getoption("modal_from")
+    inside = "MODAL_SANDBOX_ID" in os.environ
+    if source == "disk" and not inside:
+        raise pytest.UsageError("--modal-from=disk only works inside a Modal sandbox")
+    return inside if source == "auto" else source == "disk"
+
+
+def without_modal(env) -> dict[str, str]:
+    """The environment test code gets: this sandbox's identity and Modal credentials stay with the controller."""
+    return {key: value for key, value in env.items() if not key.startswith("MODAL_")}
+
+
 class Local:
-    def __init__(self, config):
+    def __init__(self, config, env=None):
         self.command = [config.getini("modal_python") or sys.executable, "-c", BOOT, library()]
         self.cwd = str(config.invocation_params.dir)
+        self.env = dict(os.environ) if env is None else env
         self.processes = []
 
     def run(self, lane, args, emit) -> int:
         process = subprocess.Popen(
             [*self.command, *args],
             cwd=self.cwd,
-            env={**os.environ, **lane.env},
+            env={**self.env, **lane.env},
             text=True,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -59,12 +74,7 @@ class Modal:
     def __init__(self, config):
         import modal
 
-        inside = os.environ.get("MODAL_SANDBOX_ID")
-        source = config.getoption("modal_from")
-        if source == "auto":
-            source = "disk" if inside else "upload"
-        if source == "disk" and not inside:
-            raise pytest.UsageError("--modal-from=disk only works inside a Modal sandbox")
+        disk = from_disk(config)
         self.modal = modal
         self.stack = contextlib.ExitStack()
         # An ephemeral app: Modal stops it, and the sandboxes in it, when this process stops heartbeating.
@@ -75,11 +85,13 @@ class Modal:
             **(config.hook.pytest_modal_sandbox(config=config) or {}),
         }
         root, here = config.rootpath, config.invocation_params.dir
-        if source == "disk":
+        if disk:
             self.command = [config.getini("modal_python") or sys.executable, "-c", BOOT, library()]
-            self.env = {key: value for key, value in os.environ.items() if not key.startswith("MODAL_")}
+            self.env = without_modal(os.environ)
             self.cwd = str(here)
-            self.image = modal.Sandbox.from_id(inside).snapshot_filesystem(timeout=300, ttl=3600)
+            self.image = modal.Sandbox.from_id(os.environ["MODAL_SANDBOX_ID"]).snapshot_filesystem(
+                timeout=300, ttl=3600
+            )
         else:
             image = config.hook.pytest_modal_image(config=config) or default_image(modal)
             self.image = image.add_local_dir(

@@ -35,6 +35,12 @@ def add_options(parser) -> None:
     group.addoption("--modal-app", default="pytest-modal", metavar="NAME", help="name of the Modal app for the run")
     group.addoption("--modal-worker", choices=("run", "collect"), help=argparse.SUPPRESS)
     parser.addini("modal_conf", "file with pytest-modal hooks, loaded only by the controller", default="modal_conf.py")
+    parser.addini(
+        "modal_isolate",
+        "each line: patterns for test files that run together in a sandbox of their own",
+        type="linelist",
+        default=[],
+    )
     parser.addini("modal_python", "interpreter the shards run (default: python, or this one with a disk snapshot)")
     parser.addini("modal_timeout", "seconds a sandbox may live", default="3600")
     parser.addini("modal_start_timeout", "seconds a shard may take to start before it is replaced", default="300")
