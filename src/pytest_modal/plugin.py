@@ -210,7 +210,10 @@ class Controller:
 
     def ready(self):
         self.start()
-        self.starting.join()
+        self.starting.join(5)
+        if self.starting.is_alive():
+            self.say("modal: preparing the image the shards start from")
+            self.starting.join()
         if self.broken:
             raise pytest.UsageError(f"pytest-modal could not start: {self.broken}") from self.broken
         return self.backend

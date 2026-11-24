@@ -1,7 +1,6 @@
 """pytest --modal from a machine outside Modal: the project is uploaded and runs in the image."""
 
 import pytest
-import pytest_cov
 
 IMAGE = """
 import sys
@@ -37,8 +36,8 @@ def test_remote_collection_runs_tests_this_machine_cannot_import(pytester, on_mo
 
 
 def test_coverage_matches_a_plain_run(pytester, on_modal):
+    # No image hook: pytest-cov reaches the shards because the default image has this environment's packages.
     pytester.makepyfile(
-        modal_conf=IMAGE.format(extra=f"pytest-cov=={pytest_cov.__version__}"),
         pkg="def a():\n    return 1\ndef b():\n    return 2\ndef c():\n    return 3\n",
         test_a="import pkg\ndef test_a(): assert pkg.a() == 1",
         test_b="import pkg\ndef test_b(): assert pkg.b() == 2",

@@ -25,9 +25,11 @@ summary behave as in a plain run.
 
 ### Where the sandboxes get the project
 
-- **Upload** (the default outside Modal): the image from `pytest_modal_image`, by default `debian_slim`
-  with this Python minor version and this pytest version, plus the project directory at the same
-  absolute path.
+- **Upload** (the default outside Modal): an image plus the project directory at the same absolute path.
+  The default image is `debian_slim` with this Python minor version and the packages of the environment
+  pytest runs in, at the same versions; a package installed from a path (`pip install -e .`) goes up as
+  it is installed. Return another image from `pytest_modal_image` when that does not fit: system
+  packages, a private index, packages that have no Linux build.
 - **Disk** (the default inside a Modal sandbox): a snapshot of the sandbox the controller runs in. A runner
   sandbox installs and builds as usual, then `pytest --modal` fans the tests out to copies of its disk, with
   the same paths, working directory and environment. Variables starting with `MODAL_`, which include the
