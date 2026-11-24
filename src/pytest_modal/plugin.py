@@ -179,6 +179,13 @@ class Controller:
     @pytest.hookimpl(tryfirst=True)
     def pytest_runtestloop(self, session):
         config = self.config
+        if self.remote and config.pluginmanager.hasplugin("_cov"):
+            # This process imported none of the project, so coverage's own measurement of it is empty and
+            # says so twice when pytest-cov stops it after this hook, before the shards' data is combined.
+            # Set here and not at configuration, whose warning filters pytest discards.
+            from coverage.exceptions import CoverageWarning
+
+            warnings.filterwarnings("ignore", "No data was collected|Module .* was never imported", CoverageWarning)
         if session.testsfailed and not config.option.continue_on_collection_errors:
             raise session.Interrupted(f"{session.testsfailed} errors during collection")
         if not self.remote:

@@ -22,6 +22,8 @@ def test_coverage_matches_a_plain_run(package, sharded, collect):
     plain = totals(package.runpytest_subprocess("--cov=pkg", "--cov-report=term"))
     result = sharded("--cov=pkg", "--cov-report=term", "--modal-shards=2", f"--modal-collect={collect}")
     assert plain and totals(result) == plain
+    # A controller that collects remotely measured nothing itself, which is not worth a warning.
+    assert "CoverageWarning" not in result.stdout.str() + result.stderr.str()
 
 
 def test_a_shard_that_starts_late_leaves_the_coverage_of_the_others(package, sharded):

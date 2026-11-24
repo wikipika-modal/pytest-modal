@@ -271,4 +271,4 @@ counts as a plain run. With a warm build the six rows finish in 15 to 21 s; a ro
   same paths where it runs, and options a plugin of the project defines go through `--modal-args`.
 - The default image cannot mirror what an index does not have for Linux; such environments need the
   `pytest_modal_image` hook.
-- Tested on Linux only.
+- The controller is tested on Linux and on macOS (arm64), not on Windows; sandboxes are Linux.
