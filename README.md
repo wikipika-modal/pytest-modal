@@ -156,6 +156,26 @@ def pytest_modal_sandbox(config):  # keyword arguments for modal.Sandbox.create
 | 5 (one per file) | 7.8 s |
 | 25 (`--modal-group-by=test`) | 4.7 s |
 
+[mpmath](https://github.com/mpmath/mpmath)'s suite (2,765 tests with its doctests; pure Python; needs
+hypothesis, pexpect, ipython and pytest-timeout), with no configuration for this plugin. Plain pytest takes
+560 s on the same cloud VM and 576 s in a sandbox. One run each:
+
+| Where the shards get the project | Run | Shards | Wall |
+| --- | --- | --- | --- |
+| Upload | first: no weights, image built (11 s) | 4 | 210 s |
+| Upload | later: kept weights | 9 | 156 s |
+| Upload | `--modal-group-by=test` | 42 | 40 s |
+| Disk, pytest inside a runner sandbox | first | 4 | 232 s |
+| Disk | later | 8 | 192 s |
+| Disk | `--modal-group-by=test` | 28 | 61 s |
+| `--modal-from=<sandbox id>`, pytest outside it | `--modal-group-by=test` | 64 | 44 s |
+
+In each row every test has the outcome it has in a plain run (the junit files compared test by test), also
+with `--modal-collect=remote`, `--cov`, `-k`, `-x`, `--lf` and a failing test. With files kept whole the
+run is as long as the suite's longest file, 136 s here, which is why `--modal-group-by=test` is four times
+faster. Coverage came to the same 21,845 statements; 5 lines differed, all reached only by tests that draw
+unseeded random numbers.
+
 pybind11's pytest suite (1,138 to 1,483 tests on each of six interpreters, C++ modules built in a runner
 sandbox, shards from its disk, `--modal-collect=remote`, default shard count): every row reports the same
 counts as a plain run. With a warm build the six rows finish in 15 to 21 s; a row's pytest step takes 5 to
@@ -176,4 +196,11 @@ counts as a plain run. With a warm build the six rows finish in 15 to 21 s; a ro
 - With `-s`, what a test wrote is shown when that test finishes, not while it runs. `--pdb` and `--trace`
   are refused: there is no terminal where the test runs.
 - One thread per shard in the controller.
-- The auto shard count ignores what a sandbox costs to start.
+- The auto shard count ignores what a sandbox costs to start, and on a first run, with no weights, it
+  counts tests: a file holding half the tests gets half the weight whatever it costs.
+- A shard collects the whole of each file it has a test from.
+- With `--modal-from=ID` the controller has none of the project, so `--cov` reports need the sources at the
+  same paths where it runs, and options a plugin of the project defines go through `--modal-args`.
+- The default image cannot mirror what an index does not have for Linux; such environments need the
+  `pytest_modal_image` hook.
+- Tested on Linux only.
