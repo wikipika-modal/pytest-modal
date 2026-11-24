@@ -37,7 +37,7 @@ EOF
 
 
 @pytest.mark.parametrize("runtime", [None, "vm"])
-def test_shards_start_from_the_runner_disk(runtime):
+def test_shards_start_from_the_runner_disk(app, runtime):
     image = (
         modal.Image.debian_slim(python_version="3.12")
         .pip_install("pytest", "modal")
@@ -48,7 +48,6 @@ def test_shards_start_from_the_runner_disk(runtime):
         {"MODAL_TOKEN_ID": config["token_id"], "MODAL_TOKEN_SECRET": config["token_secret"]}
     )
     environment = {"MODAL_ENVIRONMENT": config.get("environment") or ""}
-    app = modal.App.lookup("pytest-modal-live", create_if_missing=True)
     runner = modal.Sandbox.create("sleep", "infinity", app=app, image=image, runtime=runtime, timeout=900)
     try:
         assert runner.exec("sh", "-c", SETUP).wait() == 0
@@ -76,10 +75,9 @@ def test_shards_start_from_the_runner_disk(runtime):
         runner.terminate()
 
 
-def test_shards_start_from_a_sandbox_that_is_given_no_token(on_modal):
+def test_shards_start_from_a_sandbox_that_is_given_no_token(app, on_modal):
     """The controller runs here, outside the sandbox that holds the project, and snapshots it by id."""
     image = modal.Image.debian_slim(python_version="3.12").pip_install(f"pytest=={pytest.__version__}")
-    app = modal.App.lookup("pytest-modal-live", create_if_missing=True)
     runner = modal.Sandbox.create("sleep", "infinity", app=app, image=image, timeout=900)
     try:
         assert runner.exec("sh", "-c", SETUP).wait() == 0
