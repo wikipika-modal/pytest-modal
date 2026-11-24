@@ -48,7 +48,7 @@ def add_options(parser) -> None:
         "--modal-max-shards",
         type=int,
         metavar="N",
-        help="upper bound for auto (default 256 sandboxes, or 64 processes with --modal-backend=local)",
+        help="upper bound for auto (default 1024 sandboxes, or 64 processes with --modal-backend=local)",
     )
     group.addoption("--modal-group-by", choices=("file", "test"), default="file", help="what stays in one sandbox")
     group.addoption(

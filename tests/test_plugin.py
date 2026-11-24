@@ -141,9 +141,9 @@ def test_durations_are_kept_for_the_next_plan(pytester, sharded):
     result.stdout.fnmatch_lines(["*modal/durations*", "*test_one*"])
 
 
-def test_auto_asks_for_at_most_256_sandboxes_or_64_local_processes(pytester):
+def test_auto_asks_for_at_most_1024_sandboxes_or_64_local_processes(pytester):
     # Nothing signs in to Modal when the tests are only listed.
-    assert most(pytester.parseconfig("--modal", "--collect-only")) == 256
+    assert most(pytester.parseconfig("--modal", "--collect-only")) == 1024
     assert most(pytester.parseconfig("--modal", "--collect-only", "--modal-backend=local")) == 64
     assert most(pytester.parseconfig("--modal", "--collect-only", "--modal-max-shards=7")) == 7
 

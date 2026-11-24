@@ -1,7 +1,7 @@
 # pytest-modal
 
 Run a pytest session's tests across [Modal](https://modal.com) sandboxes by adding `--modal` to the
-command you already run. A prototype.
+command you already run. An alpha: it works end to end, and its options and behaviour may still change.
 
 ## Quickstart
 
@@ -28,13 +28,16 @@ collected 20 items
 modal: preparing the image the shards start from
 modal: app ap-...
 ....................                                                     [100%]
-modal: 4 shards, 6.9s wall, 20.0s of tests, start 20.8s, shards up in 1.6s (slowest 1.8s), app ap-...
-============================= 20 passed in 27.97s ==============================
+modal: 4 shards, 7.1s wall, 20.0s of tests, start 5.7s, shards up in 1.7s (slowest 1.8s), app ap-...
+modal: test_b.py took 5.0s of the 7.1s; --modal-group-by=test would split its tests over sandboxes
+============================= 20 passed in 13.03s ==============================
 ```
 
-The last `modal:` line is the run in brief: four sandboxes ran 20.0 s of tests in 6.9 s, after 20.8 s spent
-on the image. The image is kept, so the next run of the same project ends with `20 passed in 8.31s`, where
-plain `pytest` takes 20.03 s. Sandboxes are billed as any other use of Modal is.
+The last two `modal:` lines are the run in brief: four sandboxes ran 20.0 s of tests in 7.1 s, after 5.7 s
+spent on the image (20.8 s for an environment none of whose packages Modal had seen), and one file of
+five tests is as long as the whole run. The image is kept, so the next run of the same project ends with
+`20 passed in 7.74s`, where plain `pytest` takes 20.03 s. Sandboxes are billed as any other use of Modal
+is.
 
 To try it without an account, `pytest --modal --modal-backend=local` shards over local subprocesses
 instead. The same command takes these options, which the sections below explain:
@@ -77,25 +80,6 @@ summary behave as in a plain run.
 
 `--modal-from=upload|disk|ID` overrides the choice.
 
-## Credentials
-
-The controller is the only process that talks to Modal. It needs to create an app, build an image and
-create sandboxes: a Contributor in one environment.
-
-- **Your machine**: the profile `modal token new` wrote.
-- **CI**: `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` in the job's environment, and `MODAL_ENVIRONMENT`. Use
-  a [service user](https://modal.com/docs/guide/service-users) that is Contributor in an environment kept
-  for test runs, created with an expiry if it should not live long
-  (`modal workspace service-users create NAME --expires-in 90d`), and not a person's token.
-- **Inside a Modal sandbox**: a sandbox has no Modal identity of its own. Either pass the two variables to
-  the `pytest --modal` command alone (`sandbox.exec(..., secrets=[...])`), or keep the token out of the
-  sandbox altogether: run `pytest --modal --modal-from=<sandbox id>` from the process that created it.
-
-The controller signs in before it imports any of the project, then removes the token from its own
-environment. Shards never receive it, so tests cannot read it. Code that runs in the same sandbox as the
-controller (a `conftest.py` it imports during local collection, a build step that left a process behind) is
-not kept from it by this: for code you do not trust, use `--modal-from=<sandbox id>`.
-
 ### How many sandboxes
 
 No number of sandboxes finishes before the heaviest group (a file, by default) does. `--modal-shards=auto`
@@ -123,6 +107,25 @@ adds to it.
   controller died first.
 - The Dict of weights; an entry expires after a week without use.
 
+## Credentials
+
+The controller is the only process that talks to Modal. It needs to create an app, build an image and
+create sandboxes: a Contributor in one environment.
+
+- **Your machine**: the profile `modal token new` wrote.
+- **CI**: `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` in the job's environment, and `MODAL_ENVIRONMENT`. Use
+  a [service user](https://modal.com/docs/guide/service-users) that is Contributor in an environment kept
+  for test runs, created with an expiry if it should not live long
+  (`modal workspace service-users create NAME --expires-in 90d`), and not a person's token.
+- **Inside a Modal sandbox**: a sandbox has no Modal identity of its own. Either pass the two variables to
+  the `pytest --modal` command alone (`sandbox.exec(..., secrets=[...])`), or keep the token out of the
+  sandbox altogether: run `pytest --modal --modal-from=<sandbox id>` from the process that created it.
+
+The controller signs in before it imports any of the project, then removes the token from its own
+environment. Shards never receive it, so tests cannot read it. Code that runs in the same sandbox as the
+controller (a `conftest.py` it imports during local collection, a build step that left a process behind) is
+not kept from it by this: for code you do not trust, use `--modal-from=<sandbox id>`.
+
 ## Listing the tests
 
 - `--modal-collect=local` (default): the controller collects as pytest always does, so the tests' imports
@@ -134,7 +137,7 @@ adds to it.
 
 ## Configuration
 
-Options: `--modal-shards`, `--modal-max-shards` (256, or 64 local processes), `--modal-group-by=file|test`,
+Options: `--modal-shards`, `--modal-max-shards` (1024, or 64 local processes), `--modal-group-by=file|test`,
 `--modal-collect=local|remote`, `--modal-from=auto|upload|disk|ID`, `--modal-workdir`, `--modal-retries` (2),
 `--modal-args`, `--modal-backend=modal|local`, `--modal-app`.
 
@@ -261,7 +264,8 @@ counts as a plain run. With a warm build the six rows finish in 15 to 21 s; a ro
 - The controller is one process with a thread per shard and starts about 80 shards a second. Starting a
   thousand in a second or two would take sandboxes driven from several processes.
 - On a first run, with no weights, the auto shard count counts tests: a file holding half the tests gets
-  half the weight whatever it costs.
+  half the weight whatever it costs, and with `--modal-group-by=test` it asks for a sandbox for each test,
+  up to `--modal-max-shards`. Later runs plan from what the tests took.
 - A shard collects the whole of each file it has a test from.
 - With `--modal-from=ID` the controller has none of the project, so `--cov` reports need the sources at the
   same paths where it runs, and options a plugin of the project defines go through `--modal-args`.

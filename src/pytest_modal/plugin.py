@@ -25,9 +25,9 @@ from .plan import Shard, plan
 DURATIONS = "modal/durations"
 # Kept with the weights, under a name no test has: the seconds a shard costs besides its tests.
 START = "shard start"
-# The most shards auto asks for. Up to 256 sandboxes the controller starts them as fast as it does 64; local
-# shards are processes on this machine.
-MOST = {"modal": 256, "local": 64}
+# The most shards auto asks for. The controller starts about 80 sandboxes a second, so the last of 1,024 is
+# up some 14 s into the run; local shards are processes on this machine.
+MOST = {"modal": 1024, "local": 64}
 # Seconds before which no shard is replaced for being slower to start than the others.
 EARLIEST = 15
 ISOLATED = "isolate:"
