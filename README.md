@@ -26,6 +26,7 @@ rootdir: /home/you/project
 plugins: modal-0.0.1, anyio-4.16.0
 collected 20 items
 modal: preparing the image the shards start from
+modal: app ap-...
 ....................                                                     [100%]
 modal: 4 shards, 6.9s wall, 20.0s of tests, start 20.8s, shards up in 1.6s (slowest 1.8s), app ap-...
 ============================= 20 passed in 27.97s ==============================
