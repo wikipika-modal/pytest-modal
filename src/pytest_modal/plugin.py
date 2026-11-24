@@ -114,6 +114,7 @@ class Controller:
         self.retries = config.getoption("modal_retries")
         self.patience = float(config.getini("modal_start_timeout"))
         self.backend = self.collector = self.starting = self.broken = None
+        self.named = False
         self.events = queue.Queue()
         self.lanes = []
         self.live = set()
@@ -237,6 +238,10 @@ class Controller:
             self.starting.join()
         if self.broken:
             raise pytest.UsageError(f"pytest-modal could not start: {self.broken}") from self.broken
+        if self.backend.name and not self.named:
+            # Said as soon as it is known: a run that hangs is found and stopped by this.
+            self.named = True
+            self.say(f"modal: {self.backend.name}")
         return self.backend
 
     def launch(self, shard, mode="run", stalled=0):
