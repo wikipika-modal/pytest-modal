@@ -94,7 +94,7 @@ name of the project's root directory.
 
 ## Configuration
 
-Options: `--modal-shards`, `--modal-max-shards` (64), `--modal-group-by=file|test`,
+Options: `--modal-shards`, `--modal-max-shards` (256, or 64 local processes), `--modal-group-by=file|test`,
 `--modal-collect=local|remote`, `--modal-from=auto|upload|disk|ID`, `--modal-workdir`, `--modal-retries` (2),
 `--modal-args`, `--modal-backend=modal|local`, `--modal-app`.
 

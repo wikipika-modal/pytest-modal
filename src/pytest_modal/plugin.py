@@ -25,6 +25,9 @@ from .plan import Shard, plan
 DURATIONS = "modal/durations"
 # Kept with the weights, under a name no test has: the seconds a shard costs besides its tests.
 START = "shard start"
+# The most shards auto asks for. Up to 256 sandboxes the controller starts them as fast as it does 64; local
+# shards are processes on this machine.
+MOST = {"modal": 256, "local": 64}
 ISOLATED = "isolate:"
 OUTPUT = ("Captured stdout", "Captured stderr")
 CONTROLLER_ONLY = ("--junitxml", "--junit-xml", "--basetemp", "--cov-report", "--cov-fail-under")
@@ -184,7 +187,7 @@ class Controller:
         known = {**self.ready().weights(project), **(cache.get(DURATIONS, {}) if cache else {})}
         count = None if config.getoption("modal_shards") == "auto" else int(config.getoption("modal_shards"))
         start = known.pop(START, 0.0)
-        shards = plan(tests, count, known, config.getoption("modal_max_shards"), alone, start)
+        shards = plan(tests, count, known, most(config), alone, start)
         self.shards = len(shards)
         terminal = config.pluginmanager.get_plugin("terminalreporter")
         if terminal:
@@ -453,6 +456,10 @@ class Controller:
         terminalreporter.write_line(
             f"modal: {self.shards} shards, {self.wall:.1f}s wall, {tests:.1f}s of tests{phases}{restarts}{where}"
         )
+
+
+def most(config):
+    return config.getoption("modal_max_shards") or MOST[config.getoption("modal_backend")]
 
 
 class Argument(str):

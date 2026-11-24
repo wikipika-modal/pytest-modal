@@ -4,6 +4,7 @@ import xml.etree.ElementTree as ET
 import pytest
 
 from pytest_modal._common import BYE, MARK
+from pytest_modal.plugin import most
 
 
 @pytest.fixture
@@ -138,6 +139,13 @@ def test_durations_are_kept_for_the_next_plan(pytester, sharded):
     sharded()
     result = pytester.runpytest_subprocess("--cache-show", "modal/*")
     result.stdout.fnmatch_lines(["*modal/durations*", "*test_one*"])
+
+
+def test_auto_asks_for_at_most_256_sandboxes_or_64_local_processes(pytester):
+    # Nothing signs in to Modal when the tests are only listed.
+    assert most(pytester.parseconfig("--modal", "--collect-only")) == 256
+    assert most(pytester.parseconfig("--modal", "--collect-only", "--modal-backend=local")) == 64
+    assert most(pytester.parseconfig("--modal", "--collect-only", "--modal-max-shards=7")) == 7
 
 
 def test_what_a_shard_costs_to_start_is_kept_and_bounds_the_next_auto_count(pytester, sharded):
