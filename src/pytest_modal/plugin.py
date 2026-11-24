@@ -24,6 +24,7 @@ from .plan import Shard, plan
 
 DURATIONS = "modal/durations"
 ISOLATED = "isolate:"
+OUTPUT = ("Captured stdout", "Captured stderr")
 CONTROLLER_ONLY = ("--junitxml", "--junit-xml", "--basetemp", "--cov-report", "--cov-fail-under")
 
 
@@ -51,6 +52,8 @@ def pytest_load_initial_conftests(early_config):
 def pytest_configure(config):
     if not config.getoption("modal") or config.getoption("modal_worker"):
         return
+    if config.option.usepdb or config.option.trace:
+        raise pytest.UsageError("--pdb and --trace need a terminal where the test runs; run that test without --modal")
     conf = config.rootpath / config.getini("modal_conf")
     if conf.is_file():
         spec = importlib.util.spec_from_file_location("modal_conf", conf)
@@ -84,7 +87,7 @@ class Lane:
         self.greeted = self.bye = False
         self.tail = deque(maxlen=15)
         self.launched = time.monotonic()
-        self.seconds = 0.0
+        self.created = self.up = self.seconds = 0.0
         self.stop = None
         self.outcome = None
 
@@ -104,6 +107,10 @@ class Controller:
         self.given = for_shards(options) + shlex.split(config.getoption("modal_args"))
         if config.pluginmanager.hasplugin("_cov"):
             self.given.append("--cov-report=")
+        # With -s a shard still captures, and what each test wrote is shown here when the test finishes.
+        self.loud = config.option.capture == "no"
+        if self.loud:
+            self.given.append("--capture=fd")
         self.retries = config.getoption("modal_retries")
         self.patience = float(config.getini("modal_start_timeout"))
         self.backend = self.collector = self.starting = self.broken = None
@@ -168,7 +175,9 @@ class Controller:
         tests = [(nodeid, self.group(nodeid, group)) for nodeid, group in self.tests]
         alone = frozenset(group for _, group in tests if group.startswith(ISOLATED))
         cache = getattr(config, "cache", None)
-        known = cache.get(DURATIONS, {}) if cache else {}
+        # Weights live in two places: this machine's cache, and the backend's store for machines that keep none.
+        project = (self.root or config.rootpath).name
+        known = {**self.ready().weights(project), **(cache.get(DURATIONS, {}) if cache else {})}
         count = None if config.getoption("modal_shards") == "auto" else int(config.getoption("modal_shards"))
         shards = plan(tests, count, known, config.getoption("modal_max_shards"), alone)
         self.shards = len(shards)
@@ -189,6 +198,7 @@ class Controller:
             self.wall = time.monotonic() - started
             if cache:
                 cache.set(DURATIONS, {**known, **self.spent})
+            self.backend.keep(project, {**known, **self.spent})
         return True
 
     def group(self, nodeid, marked):
@@ -280,6 +290,7 @@ class Controller:
         hook = self.config.hook
         if kind == "hello":
             lane.greeted = True
+            lane.up = time.monotonic() - lane.launched
             theirs = event.pop("pytest")
             if theirs != pytest.__version__:
                 # Reports cross between the two as pytest's own serialised form, which is tied to its version.
@@ -338,6 +349,11 @@ class Controller:
             if report.when == "teardown" and report.nodeid in lane.pending:
                 del lane.pending[report.nodeid]
                 lane.finished += 1
+            if self.loud:
+                written = [section for section in report.sections if section[0].startswith(OUTPUT)]
+                if written and report.when == "teardown":
+                    self.say("".join(text for _, text in written).rstrip("\n"))
+                report.sections = [section for section in report.sections if section not in written]
             hook.pytest_runtest_logreport(report=report)
 
     def finish(self, lane):
@@ -384,13 +400,17 @@ class Controller:
             for lane in ran:
                 shard = lane.shard
                 terminalreporter.write_line(
-                    f"{lane.gateway.id} {shard.where} {len(shard.ids)} tests {lane.seconds:.1f}s"
+                    f"{lane.gateway.id} {shard.where} {len(shard.ids)} tests {lane.seconds:.1f}s "
+                    f"(created {lane.created:.1f}s, up {lane.up:.1f}s)"
                 )
         restarts = f", {self.restarts} restarts" if self.restarts else ""
         phases = "".join(f", {name} {seconds:.1f}s" for name, seconds in self.phases.items())
         tests = sum(self.spent.values())
+        where = f", {self.backend.name}" if self.backend.name else ""
+        up = sorted(lane.up for lane in ran if lane.greeted)
+        phases += f", shards up in {up[len(up) // 2]:.1f}s (slowest {up[-1]:.1f}s)" if up else ""
         terminalreporter.write_line(
-            f"modal: {self.shards} shards, {self.wall:.1f}s wall, {tests:.1f}s of tests{phases}{restarts}"
+            f"modal: {self.shards} shards, {self.wall:.1f}s wall, {tests:.1f}s of tests{phases}{restarts}{where}"
         )
 
 

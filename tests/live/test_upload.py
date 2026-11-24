@@ -69,3 +69,17 @@ def test_session_fixtures_run_in_every_sandbox(pytester, on_modal, split):
 
     seen = {prop.get("value") for prop in ET.parse(pytester.path / "out.xml").iter("property")}
     assert len(seen) == 2
+
+
+def test_weights_are_kept_on_modal_for_a_machine_that_keeps_none(pytester, on_modal):
+    import modal
+
+    store = modal.Dict.from_name("pytest-modal", create_if_missing=True)
+    pytester.makepyfile(test_a="def test_a(): pass")
+    try:
+        result = on_modal("-p", "no:cacheprovider")
+        result.assert_outcomes(passed=1)
+        result.stdout.fnmatch_lines(["modal: 1 shards, *, app ap-*"])
+        assert "test_a.py::test_a" in store[pytester.path.name]
+    finally:
+        store.pop(pytester.path.name, None)
