@@ -48,7 +48,15 @@ def test_auto_counts_shards_from_what_is_left_to_pack():
     assert len(plan(big, None, {}, 64, frozenset({"big.py"}))) == 1
 
 
-def test_shard_count_is_bounded_by_groups_and_the_limit():
+def test_shard_count_is_bounded_by_groups():
     tests = [(f"{n}.py::test", f"{n}.py") for n in range(5)]
     assert len(plan(tests, 50, {}, 64)) == 5
-    assert len(plan(tests, 50, {}, 3)) == 3
+
+
+def test_the_limit_bounds_auto_and_not_a_count_that_is_given():
+    tests = [(f"{n}.py::test", f"{n}.py") for n in range(200)]
+    assert len(plan(tests, None, {}, 64)) == 64
+    assert len(plan(tests, 128, {}, 64)) == 128
+    apart = frozenset({"0.py", "1.py"})
+    assert len(plan(tests, None, {}, 64, apart)) == 64
+    assert len(plan(tests, 128, {}, 64, apart)) == 128

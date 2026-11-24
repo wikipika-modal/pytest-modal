@@ -63,7 +63,8 @@ not kept from it by this: for code you do not trust, use `--modal-from=<sandbox 
 ### How many sandboxes
 
 No number of sandboxes finishes before the heaviest group (a file, by default) does. `--modal-shards=auto`
-fills shards to half that group's weight, up to `--modal-max-shards`. Weights are the wall time each test
+fills shards to half that group's weight, up to `--modal-max-shards`; a number given to `--modal-shards` is
+used as given, however large. Weights are the wall time each test
 cost its shard in earlier runs; a test never seen weighs the median. They are kept in `.pytest_cache` and,
 for machines that keep no cache between runs, in a Modal Dict named `pytest-modal` in the environment the
 run uses, under the name of the project's root directory.
