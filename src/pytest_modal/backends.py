@@ -22,6 +22,21 @@ REMOTE_LIB = "/opt/pytest-modal"
 IGNORE = [".git", ".venv", "**/__pycache__", "**/*.pyc", "**/node_modules"]
 SITE = "/usr/local/lib/python{}/site-packages"
 NOT_MIRRORED = {"pytest-modal", "pip"}
+SNAPSHOT = {"timeout": 300, "ttl": 3600}
+CREDENTIALS = (
+    "MODAL_TOKEN_ID",
+    "MODAL_TOKEN_SECRET",
+    "MODAL_OAUTH_REFRESH_TOKEN",
+    "MODAL_OAUTH_CLIENT_ID",
+    "MODAL_OAUTH_CLIENT_SECRET",
+    "MODAL_OAUTH_JWT_KEY",
+)
+HOW_TO_SIGN_IN = (
+    "On your own machine: `modal token new`. In CI: set MODAL_TOKEN_ID and MODAL_TOKEN_SECRET, best those of a "
+    "service user that can write to one environment. Inside a Modal sandbox, which has no identity of its own: "
+    "give the two variables to this pytest command alone, or run pytest outside the sandbox with "
+    "--modal-from=<sandbox id>, which needs no token inside it."
+)
 
 
 def library() -> str:
@@ -31,13 +46,30 @@ def library() -> str:
     return folder
 
 
-def from_disk(config) -> bool:
-    """Whether shards start from a snapshot of this machine's disk, which only a Modal sandbox can take."""
-    source = config.getoption("modal_from")
+def origin(source: str) -> str:
+    """Where the shards get the project, from the value of --modal-from: "upload", "disk" (a snapshot of this
+    machine's disk, which only a Modal sandbox can take), or the id of a sandbox or image that holds it."""
     inside = "MODAL_SANDBOX_ID" in os.environ
     if source == "disk" and not inside:
         raise pytest.UsageError("--modal-from=disk only works inside a Modal sandbox")
-    return inside if source == "auto" else source == "disk"
+    if source == "auto":
+        return "disk" if inside else "upload"
+    return source
+
+
+def sign_in() -> None:
+    """Open the Modal client, then take its credentials out of this process's environment: the client keeps
+    them, and project code imported here, or anything it starts, does not inherit them."""
+    import modal
+
+    try:
+        modal.Client.from_env()
+    except modal.exception.AuthError as error:
+        raise pytest.UsageError(f"pytest --modal could not sign in to Modal: {error}\n{HOW_TO_SIGN_IN}") from error
+    except modal.exception.Error as error:
+        raise pytest.UsageError(f"pytest --modal could not reach Modal: {error}") from error
+    for name in CREDENTIALS:
+        os.environ.pop(name, None)
 
 
 def without_modal(env) -> dict[str, str]:
@@ -81,35 +113,42 @@ class Modal:
     def __init__(self, config):
         import modal
 
-        disk = from_disk(config)
         self.modal = modal
-        self.stack = contextlib.ExitStack()
         # An ephemeral app: Modal stops it, and the sandboxes in it, when this process stops heartbeating.
         self.app = modal.App(config.getoption("modal_app"))
-        self.stack.enter_context(self.app.run())
         self.options = {
             "timeout": int(config.getini("modal_timeout")),
             **(config.hook.pytest_modal_sandbox(config=config) or {}),
         }
+        # The app stops with this block if anything in it fails.
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(self.app.run())
+            self.prepare(config, origin(config.getoption("modal_from")), stack)
+            self.stack = stack.pop_all()
+
+    def prepare(self, config, source, stack):
+        modal = self.modal
         root, here = config.rootpath, config.invocation_params.dir
-        if disk:
+        if source == "disk":
             self.command = [config.getini("modal_python") or sys.executable, "-c", BOOT, library()]
             self.env = without_modal(os.environ)
             self.cwd = str(here)
-            self.image = modal.Sandbox.from_id(os.environ["MODAL_SANDBOX_ID"]).snapshot_filesystem(
-                timeout=300, ttl=3600
-            )
-        else:
-            image = config.hook.pytest_modal_image(config=config) or mirror(modal, root, self.stack)
-            # Built here, once, so that a build that fails is one error and not one for each shard.
-            self.image = (
-                image.add_local_dir(PACKAGE, f"{REMOTE_LIB}/pytest_modal", ignore=["__pycache__"])
-                .add_local_dir(root, str(root), ignore=IGNORE)
-                .build(self.app)
-            )
-            self.command = [config.getini("modal_python") or "python", "-c", BOOT, REMOTE_LIB]
-            self.env = {}
+            self.image = modal.Sandbox.from_id(os.environ["MODAL_SANDBOX_ID"]).snapshot_filesystem(**SNAPSHOT)
+            return
+        self.command = [config.getini("modal_python") or "python", "-c", BOOT, REMOTE_LIB]
+        self.env = {}
+        if source == "upload":
+            image = config.hook.pytest_modal_image(config=config) or mirror(modal, root, stack)
+            image = image.add_local_dir(root, str(root), ignore=IGNORE)
             self.cwd = str(here if here.is_relative_to(root) else root)
+        else:
+            if source.startswith("sb-"):
+                source = modal.Sandbox.from_id(source).snapshot_filesystem(**SNAPSHOT).object_id
+            # Looked up by id: the image object a snapshot returns takes no files on top.
+            image = modal.Image.from_id(source)
+            self.cwd = config.getoption("modal_workdir")
+        # Built here, once, so that a build that fails is one error and not one for each shard.
+        self.image = image.add_local_dir(PACKAGE, f"{REMOTE_LIB}/pytest_modal", ignore=["__pycache__"]).build(self.app)
 
     def run(self, lane, args, emit) -> int:
         box = self.modal.Sandbox.create("sleep", "infinity", app=self.app, image=self.image, **self.options)

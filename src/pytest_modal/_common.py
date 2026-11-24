@@ -6,6 +6,17 @@ MARK = "@@pytest-modal@@ "
 BOOT = "import sys; sys.path.insert(0, sys.argv.pop(1)); import pytest; sys.exit(pytest.main(sys.argv[1:]))"
 
 
+def source(value: str) -> str:
+    if value in ("auto", "upload", "disk") or elsewhere(value):
+        return value
+    raise argparse.ArgumentTypeError("expected auto, upload, disk, a sandbox id (sb-...) or an image id (im-...)")
+
+
+def elsewhere(source: str) -> bool:
+    """Whether the project is held by a sandbox or image this process names and has no files of."""
+    return source.startswith(("sb-", "im-"))
+
+
 def add_options(parser) -> None:
     if getattr(parser, "_modal_options", False):
         return
@@ -19,14 +30,18 @@ def add_options(parser) -> None:
         "--modal-collect",
         choices=("local", "remote"),
         default="local",
-        help="remote: collect in a sandbox; this process then imports no test code and loads no conftest.py",
+        help="remote: collect in a sandbox; this process then imports no test code and loads no conftest.py "
+        "(always the case with --modal-from=ID)",
     )
     group.addoption(
         "--modal-from",
-        choices=("auto", "upload", "disk"),
+        type=source,
         default="auto",
-        help="upload the project, or start shards from a snapshot of this disk (auto: disk inside a sandbox)",
+        metavar="SOURCE",
+        help="upload: send the project; disk: snapshot this sandbox's disk (auto: disk inside a sandbox, else "
+        "upload); or the id of a sandbox (sb-...) to snapshot or of an image (im-...) that holds the project",
     )
+    group.addoption("--modal-workdir", metavar="DIR", help="directory the shards run in, with --modal-from=ID")
     group.addoption("--modal-retries", type=int, default=2, metavar="N", help="restarts of a shard that ran nothing")
     group.addoption("--modal-args", default="", metavar="ARGS", help="extra pytest arguments for the shards only")
     group.addoption(

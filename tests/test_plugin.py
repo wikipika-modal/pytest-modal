@@ -124,6 +124,24 @@ def test_a_backend_that_cannot_start_is_a_usage_error(pytester, monkeypatch):
     assert result.ret == pytest.ExitCode.USAGE_ERROR
 
 
+def test_without_modal_credentials_the_run_stops_before_it_imports_the_project(pytester, monkeypatch):
+    for name in ("MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET", "MODAL_PROFILE"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("MODAL_CONFIG_PATH", str(pytester.path / "none.toml"))
+    pytester.makeconftest("open('imported', 'w').close()")
+    pytester.makepyfile("def test_one(): pass")
+    result = pytester.runpytest_subprocess("--modal")
+    result.stderr.fnmatch_lines(["*could not sign in to Modal: Token missing*", "*modal token new*--modal-from=*"])
+    assert result.ret == pytest.ExitCode.USAGE_ERROR
+    assert not (pytester.path / "imported").exists()
+
+
+def test_a_source_that_is_no_id_is_a_usage_error(pytester, sharded):
+    result = sharded("--modal-from=somewhere")
+    result.stderr.fnmatch_lines(["*--modal-from: expected auto, upload, disk, a sandbox id*"])
+    assert result.ret == pytest.ExitCode.USAGE_ERROR
+
+
 def test_modal_conf_is_loaded_by_the_controller_only(pytester, sharded):
     pytester.makepyfile(
         modal_conf="open('loaded', 'a').write('x')", test_a="def test_a(): pass", test_b="def test_b(): pass"

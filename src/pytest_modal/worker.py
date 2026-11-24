@@ -46,6 +46,7 @@ class Worker:
             version_info=tuple(sys.version_info),
             executable=sys.executable,
             pytest=pytest.__version__,
+            rootdir=str(config.rootpath),
         )
 
     def emit(self, kind, **data):

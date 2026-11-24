@@ -14,11 +14,12 @@ import time
 import warnings
 from collections import deque
 from fnmatch import fnmatch
+from pathlib import Path
 
 import pytest
 
-from ._common import MARK, add_hooks, add_options, group_mark
-from .backends import BACKENDS, Local, from_disk, without_modal
+from ._common import MARK, add_hooks, add_options, elsewhere, group_mark
+from .backends import BACKENDS, Local, origin, sign_in, without_modal
 from .plan import Shard, plan
 
 DURATIONS = "modal/durations"
@@ -37,8 +38,14 @@ def pytest_addhooks(pluginmanager):
 @pytest.hookimpl(tryfirst=True)
 def pytest_load_initial_conftests(early_config):
     options = early_config.known_args_namespace
-    if options.modal and options.modal_collect == "remote" and not options.modal_worker:
-        options.noconftest = True
+    if not options.modal or options.modal_worker:
+        return
+    remote = options.modal_collect == "remote" or elsewhere(options.modal_from)
+    options.noconftest = options.noconftest or remote
+    unused = options.help or options.version or (options.collectonly and not remote)
+    if options.modal_backend == "modal" and not unused:
+        origin(options.modal_from)
+        sign_in()
 
 
 def pytest_configure(config):
@@ -89,7 +96,10 @@ class Lane:
 class Controller:
     def __init__(self, config):
         self.config = config
-        self.remote = config.getoption("modal_collect") == "remote"
+        foreign = elsewhere(config.getoption("modal_from"))
+        self.remote = foreign or config.getoption("modal_collect") == "remote"
+        # The shards' root directory; one that is not on this machine is learned from the shard that collects.
+        self.root = None if foreign else config.rootpath
         self.targets, options = split(config)
         self.given = for_shards(options) + shlex.split(config.getoption("modal_args"))
         if config.pluginmanager.hasplugin("_cov"):
@@ -123,7 +133,7 @@ class Controller:
         config = self.config
         # The interpreter that runs the tests is on this disk when the shards start from a snapshot of it:
         # it lists the tests here while the snapshot is taken.
-        if config.getoption("modal_backend") == "modal" and from_disk(config):
+        if config.getoption("modal_backend") == "modal" and origin(config.getoption("modal_from")) == "disk":
             self.collector = Local(config, without_modal(os.environ))
         with calm():
             self.start()
@@ -224,9 +234,9 @@ class Controller:
         lane = Lane(shard, mode, self.shards, stalled)
         if "PYTEST_ADDOPTS" in os.environ:
             lane.env["PYTEST_ADDOPTS"] = shlex.join(for_shards(shlex.split(os.environ["PYTEST_ADDOPTS"])))
-        root = self.config.rootpath
-        paths = self.targets if mode == "collect" else [str(root / path) for path in shard.paths]
-        args = [*self.given, f"--modal-worker={mode}", "-p", "pytest_modal.worker", "--rootdir", str(root), *paths]
+        root = ["--rootdir", str(self.root)] if self.root else []
+        paths = self.targets if mode == "collect" else [str(self.root / path) for path in shard.paths]
+        args = [*self.given, f"--modal-worker={mode}", "-p", "pytest_modal.worker", *root, *paths]
         self.lanes.append(lane)
         self.live.add(lane)
         threading.Thread(target=pump, args=(runner, lane, args, self.events), daemon=True).start()
@@ -277,6 +287,7 @@ class Controller:
                     f"the shards run pytest {theirs} ({event['executable']}) and this process runs pytest "
                     f"{pytest.__version__}: install the same version in both"
                 )
+            self.root = self.root or Path(event.pop("rootdir"))
             # pytest 8.0 formats this with %, which wants the tuple JSON turned into a list.
             lane.workerinfo.update(event, version_info=tuple(event["version_info"]))
         elif kind == "items":

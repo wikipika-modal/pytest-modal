@@ -32,10 +32,33 @@ summary behave as in a plain run.
   packages, a private index, packages that have no Linux build.
 - **Disk** (the default inside a Modal sandbox): a snapshot of the sandbox the controller runs in. A runner
   sandbox installs and builds as usual, then `pytest --modal` fans the tests out to copies of its disk, with
-  the same paths, working directory and environment. Variables starting with `MODAL_`, which include the
-  controller's credentials, are not passed on to test code.
+  the same paths, working directory and environment, less the variables starting with `MODAL_`.
+- **A sandbox or image named by id** (`--modal-from=sb-...` or `im-...`): the controller runs somewhere
+  else, snapshots that sandbox (or takes that image) and starts the shards from it, in the directory given
+  by `--modal-workdir`. Collection is remote, the sandbox needs pytest and neither this plugin nor a Modal
+  token, and the controller needs none of the project: `pip install pytest-modal` and the same pytest
+  version are enough.
 
-`--modal-from=upload|disk` overrides the choice.
+`--modal-from=upload|disk|ID` overrides the choice.
+
+## Credentials
+
+The controller is the only process that talks to Modal. It needs to create an app, build an image and
+create sandboxes: a Contributor in one environment.
+
+- **Your machine**: the profile `modal token new` wrote.
+- **CI**: `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` in the job's environment, and `MODAL_ENVIRONMENT`. Use
+  a [service user](https://modal.com/docs/guide/service-users) that is Contributor in an environment kept
+  for test runs, created with an expiry if it should not live long
+  (`modal workspace service-users create NAME --expires-in 90d`), and not a person's token.
+- **Inside a Modal sandbox**: a sandbox has no Modal identity of its own. Either pass the two variables to
+  the `pytest --modal` command alone (`sandbox.exec(..., secrets=[...])`), or keep the token out of the
+  sandbox altogether: run `pytest --modal --modal-from=<sandbox id>` from the process that created it.
+
+The controller signs in before it imports any of the project, then removes the token from its own
+environment. Shards never receive it, so tests cannot read it. Code that runs in the same sandbox as the
+controller (a `conftest.py` it imports during local collection, a build step that left a process behind) is
+not kept from it by this: for code you do not trust, use `--modal-from=<sandbox id>`.
 
 ### How many sandboxes
 
@@ -55,8 +78,8 @@ cost its shard in earlier runs, kept in `.pytest_cache`; a test never seen weigh
 ## Configuration
 
 Options: `--modal-shards`, `--modal-max-shards` (64), `--modal-group-by=file|test`,
-`--modal-collect=local|remote`, `--modal-from=auto|upload|disk`, `--modal-retries` (2), `--modal-args`,
-`--modal-backend=modal|local`, `--modal-app`.
+`--modal-collect=local|remote`, `--modal-from=auto|upload|disk|ID`, `--modal-workdir`, `--modal-retries` (2),
+`--modal-args`, `--modal-backend=modal|local`, `--modal-app`.
 
 Ini values:
 
@@ -105,7 +128,9 @@ def pytest_modal_sandbox(config):  # keyword arguments for modal.Sandbox.create
 | A shard does not collect a test the controller listed | That test is an error |
 | The controller is interrupted or terminated | It stops its sandboxes |
 | The controller is killed outright | Modal stops the run's app and its sandboxes when the heartbeat lapses (about 3 minutes) |
-| Modal cannot be reached, or the options do not fit | A usage error, no traceback |
+| No Modal credentials, Modal cannot be reached, or the options do not fit | A usage error before anything is collected, no traceback |
+| The shards run another pytest version than the controller | A usage error naming both |
+| A shard cannot import a file the controller listed | That file's tests are errors; the shard runs its others |
 
 ## Measured
 

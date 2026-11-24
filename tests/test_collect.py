@@ -21,6 +21,13 @@ def test_remote_collection_needs_no_local_imports(pytester, sharded):
     assert result.ret == 1
 
 
+def test_a_project_held_elsewhere_is_collected_where_it_is(pytester, sharded):
+    project(pytester)
+    result = sharded("--modal-from=im-held-elsewhere", "--modal-shards=2")
+    result.assert_outcomes(passed=2, failed=1)
+    result.stdout.fnmatch_lines(["collected 3 items in *"])
+
+
 def test_local_collection_of_that_project_cannot_start(pytester, sharded):
     project(pytester)
     assert sharded().ret != 0

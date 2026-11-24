@@ -18,6 +18,8 @@ def test_reads_what_the_runner_built():
 EOF
 cat > test_b.py <<'EOF'
 import os
+# Imported by the controller too, which by then has taken its token out of its environment.
+assert "MODAL_TOKEN_SECRET" not in os.environ
 def test_runs_in_another_sandbox():
     assert os.environ["MODAL_SANDBOX_ID"] != open("/work/runner").read().strip()
 def test_has_no_modal_credentials():
@@ -70,5 +72,19 @@ def test_shards_start_from_the_runner_disk(runtime):
         output = run.stdout.read() + run.stderr.read()
         assert run.wait() == 0, output
         assert "collected 4 items in pid" in output and "4 passed" in output, output
+    finally:
+        runner.terminate()
+
+
+def test_shards_start_from_a_sandbox_that_is_given_no_token(on_modal):
+    """The controller runs here, outside the sandbox that holds the project, and snapshots it by id."""
+    image = modal.Image.debian_slim(python_version="3.12").pip_install(f"pytest=={pytest.__version__}")
+    app = modal.App.lookup("pytest-modal-live", create_if_missing=True)
+    runner = modal.Sandbox.create("sleep", "infinity", app=app, image=image, timeout=900)
+    try:
+        assert runner.exec("sh", "-c", SETUP).wait() == 0
+        result = on_modal(f"--modal-from={runner.object_id}", "--modal-workdir=/work", "--modal-shards=2")
+        result.assert_outcomes(passed=3)
+        result.stdout.fnmatch_lines(["collected 3 items in sb-*", "modal: 2 shards*"])
     finally:
         runner.terminate()
